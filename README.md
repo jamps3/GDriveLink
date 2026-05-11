@@ -55,10 +55,10 @@ Build the app:
 The executable is created at:
 
 ```text
-dist\GDriveLink\GDriveLink.exe
+dist\GDriveLink.exe
 ```
 
-Keep `credentials.json` beside the executable for first-run Google OAuth setup. The generated `build\` and `dist\` folders are ignored by Git.
+Keep `credentials.json` beside the executable for first-run Google OAuth setup. The build is a single-file executable, so there is no `_internal` folder to distribute. The generated `build\` folder is ignored by Git.
 
 ## Notes
 

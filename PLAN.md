@@ -27,6 +27,7 @@
 - Updated Drive Folder delete behavior to remove deleted cards locally without reloading the whole folder.
 - Added `gdrivelink.ico` and wired it as the app window icon.
 - Built a Windows executable with PyInstaller and documented the build workflow.
+- Switched PyInstaller packaging to a single-file executable.
 
 ## Next
 
