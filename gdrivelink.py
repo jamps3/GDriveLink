@@ -20,7 +20,7 @@ from PIL import ImageGrab, ImageTk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 
-APP_TITLE = "Drive Drop Uploader"
+APP_TITLE = "GDriveLink"
 APP_DIR = Path(__file__).resolve().parent
 CLIENT_SECRET_FILE = APP_DIR / "credentials.json"
 TOKEN_FILE = APP_DIR / "token.pickle"
@@ -63,6 +63,7 @@ class DriveUploaderApp:
         self.history = load_history()
         self.history_links_by_row: list[str | None] = []
         self.drive_files_by_id: dict[str, dict[str, str]] = {}
+        self.drive_cards_by_id: dict[str, Frame] = {}
 
         self._build_ui()
         self._load_history_rows()
@@ -74,20 +75,46 @@ class DriveUploaderApp:
         container = Frame(self.root, padx=18, pady=18)
         container.pack(fill=BOTH, expand=True)
 
-        title = Label(container, text=APP_TITLE, font=("Segoe UI", 18, "bold"), anchor="w")
-        title.pack(fill="x")
+        header = Frame(container)
+        header.pack(fill=X)
+        header.configure(height=52)
+        header.pack_propagate(False)
+
+        title = Label(header, text=APP_TITLE, font=("Segoe UI", 18, "bold"), anchor="w")
+        title.pack(side=LEFT, fill=X, expand=True)
+
+        self.refresh_drive_button = Button(
+            header,
+            text="Refresh folder files",
+            command=self._refresh_drive_files,
+            font=("Segoe UI", 12, "bold"),
+            padx=22,
+            pady=10,
+        )
+        self.refresh_drive_button.pack(side=RIGHT)
+
+        self.tabs = Notebook(container)
+        self.tabs.pack(fill=BOTH, expand=True, pady=(12, 0))
+        self.tabs.bind("<<NotebookTabChanged>>", self._handle_tab_changed)
+
+        main_tab = Frame(self.tabs)
+        history_tab = Frame(self.tabs)
+        drive_tab = Frame(self.tabs)
+        self.tabs.add(main_tab, text="Main")
+        self.tabs.add(history_tab, text="Upload History")
+        self.tabs.add(drive_tab, text="Drive Folder")
 
         hint = Label(
-            container,
+            main_tab,
             text="Files are uploaded to your Google Drive, shared as anyone with the link can read, and listed below.",
             font=("Segoe UI", 10),
             anchor="w",
             justify=LEFT,
         )
-        hint.pack(fill="x", pady=(4, 16))
+        hint.pack(fill="x", pady=(12, 16))
 
         self.drop_area = Label(
-            container,
+            main_tab,
             text="Drop files here",
             relief="ridge",
             borderwidth=2,
@@ -100,38 +127,31 @@ class DriveUploaderApp:
         self.drop_area.drop_target_register(DND_FILES)
         self.drop_area.dnd_bind("<<Drop>>", self._handle_drop)
 
-        folder_frame = Frame(container)
+        folder_frame = Frame(main_tab)
         folder_frame.pack(fill="x", pady=(12, 0))
 
         Label(folder_frame, text="Drive folder", anchor="w", font=("Segoe UI", 10)).pack(side=LEFT)
         Entry(folder_frame, textvariable=self.drive_folder_name).pack(side=LEFT, fill="x", expand=True, padx=(8, 0))
 
-        controls = Frame(container)
+        controls = Frame(main_tab)
         controls.pack(fill="x", pady=12)
 
-        Button(controls, text="Choose files", command=self._choose_files).pack(side=LEFT)
+        Button(
+            controls,
+            text="Choose files",
+            command=self._choose_files,
+            font=("Segoe UI", 12, "bold"),
+            padx=22,
+            pady=10,
+        ).pack(side=LEFT)
         Button(controls, text="Open token folder", command=self._open_app_folder).pack(side=LEFT, padx=(8, 0))
-        Button(controls, text="Open selected link", command=self._open_selected_link).pack(side=RIGHT)
-        Button(controls, text="Copy selected link", command=self._copy_selected_link).pack(side=RIGHT, padx=(0, 8))
 
-        self.progress = Progressbar(container, mode="indeterminate")
+        self.progress = Progressbar(main_tab, mode="indeterminate")
         self.progress.pack(fill="x", pady=(0, 8))
 
-        Label(container, textvariable=self.status, anchor="w", font=("Segoe UI", 10)).pack(fill="x", pady=(0, 8))
-
-        self.tabs = Notebook(container)
-        self.tabs.pack(fill=BOTH, expand=True)
-
-        history_tab = Frame(self.tabs)
-        drive_tab = Frame(self.tabs)
-        self.tabs.add(history_tab, text="Upload History")
-        self.tabs.add(drive_tab, text="Drive Folder")
+        Label(main_tab, textvariable=self.status, anchor="w", font=("Segoe UI", 10)).pack(fill="x", pady=(0, 8))
 
         self.results = self._create_scrolled_listbox(history_tab)
-
-        drive_controls = Frame(drive_tab)
-        drive_controls.pack(fill=X, pady=(0, 8))
-        Button(drive_controls, text="Refresh folder files", command=self._refresh_drive_files).pack(side=LEFT)
 
         self.drive_cards_canvas = Canvas(drive_tab, highlightthickness=0)
         self.drive_cards_scrollbar = Scrollbar(drive_tab, orient="vertical", command=self.drive_cards_canvas.yview)
@@ -152,6 +172,14 @@ class DriveUploaderApp:
         )
         self.drive_cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
         self.drive_cards_scrollbar.pack(side=RIGHT, fill=Y)
+        self._handle_tab_changed()
+
+    def _handle_tab_changed(self, _event=None) -> None:  # type: ignore[no-untyped-def]
+        selected_tab = self.tabs.tab(self.tabs.select(), "text")
+        if selected_tab == "Drive Folder":
+            self.refresh_drive_button.configure(text="Refresh folder files", state="normal")
+        else:
+            self.refresh_drive_button.configure(text="", state="disabled")
 
     def _create_scrolled_listbox(self, parent: Frame) -> Listbox:
         list_frame = Frame(parent)
@@ -376,8 +404,8 @@ class DriveUploaderApp:
             except queue.Empty:
                 break
 
-            self._clear_drive_cards()
             if kind == "success" and isinstance(detail, list):
+                self._clear_drive_cards()
                 if not detail:
                     self._show_drive_message("No files found in this Drive folder.")
                 for item in detail:
@@ -391,9 +419,22 @@ class DriveUploaderApp:
                 self.status.set("Selected Drive folder link copied and sharing is enabled.")
                 self._refresh_drive_files()
             elif kind == "copy_error":
+                self._clear_drive_cards()
                 self._show_drive_message(f"ERROR: {detail}")
                 self.status.set("Could not update sharing permission.")
+            elif kind == "delete_success":
+                if isinstance(detail, dict):
+                    file_id = detail.get("id", "")
+                    name = detail.get("name", "File")
+                    self._remove_drive_file_card(file_id)
+                    self.status.set(f"Deleted '{name}' from Drive.")
+                else:
+                    self.status.set("Deleted file from Drive.")
+            elif kind == "delete_error":
+                self._show_drive_message(f"ERROR: {detail}")
+                self.status.set("Could not delete Drive file.")
             else:
+                self._clear_drive_cards()
                 self._show_drive_message(f"ERROR: {detail}")
                 self.status.set("Could not load Drive folder files.")
 
@@ -407,6 +448,18 @@ class DriveUploaderApp:
         worker = threading.Thread(target=self._copy_drive_link_worker, args=(item,), daemon=True)
         worker.start()
 
+    def _delete_drive_file(self, file_id: str) -> None:
+        item = self.drive_files_by_id.get(file_id)
+        if not item:
+            return
+        name = item.get("name", "this file")
+        confirmed = messagebox.askyesno(APP_TITLE, f"Delete '{name}' from the Drive folder?")
+        if not confirmed:
+            return
+        self.status.set(f"Deleting '{name}' from Drive...")
+        worker = threading.Thread(target=self._delete_drive_file_worker, args=(item,), daemon=True)
+        worker.start()
+
     def _open_drive_file_link(self, file_id: str) -> None:
         item = self.drive_files_by_id.get(file_id)
         if item:
@@ -416,6 +469,7 @@ class DriveUploaderApp:
 
     def _clear_drive_cards(self) -> None:
         self.drive_files_by_id.clear()
+        self.drive_cards_by_id.clear()
         for child in self.drive_cards_frame.winfo_children():
             child.destroy()
 
@@ -437,6 +491,8 @@ class DriveUploaderApp:
 
         card = Frame(self.drive_cards_frame, relief="ridge", borderwidth=1, padx=10, pady=8)
         card.pack(fill=X, pady=(0, 8))
+        if file_id:
+            self.drive_cards_by_id[file_id] = card
 
         top_row = Frame(card)
         top_row.pack(fill=X)
@@ -466,6 +522,11 @@ class DriveUploaderApp:
             text="Copy link",
             command=lambda current_id=file_id: self._copy_drive_file_link(current_id),
         ).pack(side=RIGHT)
+        Button(
+            meta_row,
+            text="Delete",
+            command=lambda current_id=file_id: self._delete_drive_file(current_id),
+        ).pack(side=RIGHT, padx=(0, 8))
 
     def _copy_drive_link_worker(self, item: dict[str, str]) -> None:
         try:
@@ -477,6 +538,22 @@ class DriveUploaderApp:
             self.drive_files_queue.put(("copy_success", [shared_file]))
         except Exception as exc:  # noqa: BLE001 - surface Drive errors in the UI.
             self.drive_files_queue.put(("copy_error", str(exc)))
+
+    def _delete_drive_file_worker(self, item: dict[str, str]) -> None:
+        try:
+            service = get_drive_service()
+            trash_drive_file(service, item["id"])
+            self.drive_files_queue.put(("delete_success", {"id": item["id"], "name": item.get("name", "File")}))
+        except Exception as exc:  # noqa: BLE001 - surface Drive errors in the UI.
+            self.drive_files_queue.put(("delete_error", str(exc)))
+
+    def _remove_drive_file_card(self, file_id: str) -> None:
+        card = self.drive_cards_by_id.pop(file_id, None)
+        self.drive_files_by_id.pop(file_id, None)
+        if card:
+            card.destroy()
+        if not self.drive_files_by_id:
+            self._show_drive_message("No files found in this Drive folder.")
 
     def _copy_to_clipboard(self, link: str) -> None:
         self.root.clipboard_clear()
@@ -599,6 +676,10 @@ def ensure_anyone_reader_permission(service, file_id: str) -> dict[str, str]:  #
         ).execute()
 
     return service.files().get(fileId=file_id, fields="id, webViewLink").execute()
+
+
+def trash_drive_file(service, file_id: str) -> None:  # type: ignore[no-untyped-def]
+    service.files().update(fileId=file_id, body={"trashed": True}, fields="id, trashed").execute()
 
 
 def upload_and_share(service, file_path: Path, folder_id: str) -> dict[str, str]:  # type: ignore[no-untyped-def]

@@ -23,6 +23,8 @@
 - Displayed current sharing permissions for each file in the Drive Folder tab.
 - Made Drive Folder link-copy update the selected file to `anyone with the link can read` before copying.
 - Rearranged the Drive Folder tab into compact file cards with per-file Open and Copy link actions.
+- Added per-file Delete actions in the Drive Folder tab that move files to Google Drive trash.
+- Updated Drive Folder delete behavior to remove deleted cards locally without reloading the whole folder.
 
 ## Next
 

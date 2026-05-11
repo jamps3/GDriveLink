@@ -46,5 +46,6 @@ Open this folder in VS Code and press F5. The included `.vscode/launch.json` run
 - Successful uploads are saved to `upload_history.json` and loaded into the Upload History tab on startup.
 - The Drive Folder tab shows compact cards for files currently present in the selected Drive folder, including their current link-sharing status.
 - Copying a link from a Drive Folder card first changes that file to `anyone with the link can read`, then copies the link.
+- Deleting a file from a Drive Folder card moves it to Google Drive trash and removes it from the current view.
 - The app requests the `drive.file` scope, so it can manage files it creates or files the user explicitly opens with the app.
 - Delete `token.pickle` to sign in with a different Google account.
