@@ -1,0 +1,16 @@
+[project]
+name = "gdrivelink"
+version = "0.1.0"
+description = "Desktop app for uploading dropped files and pasted clipboard images to Google Drive with link sharing."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "google-api-python-client>=2.130.0",
+  "google-auth-oauthlib>=1.2.0",
+  "google-auth-httplib2>=0.2.0",
+  "tkinterdnd2>=0.3.0",
+  "Pillow>=10.3.0",
+]
+
+[project.scripts]
+gdrivelink = "gdrivelink:main"
