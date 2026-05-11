@@ -4,3 +4,5 @@ upload_history.json
 .venv/
 __pycache__/
 *.py[cod]
+build/
+dist/

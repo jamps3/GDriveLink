@@ -38,9 +38,32 @@ You can also copy an image to the clipboard and press `Ctrl+V` in the app. The a
 
 Open this folder in VS Code and press F5. The included `.vscode/launch.json` runs `gdrivelink.py` from the workspace folder.
 
+## Build Windows EXE
+
+Install PyInstaller into the virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pyinstaller
+```
+
+Build the app:
+
+```powershell
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean GDriveLink.spec
+```
+
+The executable is created at:
+
+```text
+dist\GDriveLink\GDriveLink.exe
+```
+
+Keep `credentials.json` beside the executable for first-run Google OAuth setup. The generated `build\` and `dist\` folders are ignored by Git.
+
 ## Notes
 
 - Verified with Python 3.14.5 in `.venv`.
+- The app window uses `gdrivelink.ico` as its program icon. `gdrivelink-icon.png` is a preview/source image for the icon.
 - Uploaded files are created in the Drive folder shown in the app. The default folder is `GDriveLink`.
 - If the configured Drive folder does not exist, the app creates it.
 - Successful uploads are saved to `upload_history.json` and loaded into the Upload History tab on startup.

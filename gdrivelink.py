@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pickle
 import queue
+import sys
 import tempfile
 import threading
 import webbrowser
@@ -21,10 +22,12 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 
 APP_TITLE = "GDriveLink"
-APP_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 CLIENT_SECRET_FILE = APP_DIR / "credentials.json"
 TOKEN_FILE = APP_DIR / "token.pickle"
 HISTORY_FILE = APP_DIR / "upload_history.json"
+ICON_FILE = RESOURCE_DIR / "gdrivelink.ico"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 
@@ -51,6 +54,8 @@ class DriveUploaderApp:
     def __init__(self) -> None:
         self.root = TkinterDnD.Tk()
         self.root.title(APP_TITLE)
+        if ICON_FILE.exists():
+            self.root.iconbitmap(ICON_FILE)
         self.root.geometry("760x520")
         self.root.minsize(640, 640)
 
