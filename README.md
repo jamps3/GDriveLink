@@ -36,7 +36,7 @@ You can also copy an image to the clipboard and press `Ctrl+V` in the app. The a
 
 ## VS Code
 
-Open this folder in VS Code and press F5. The included `.vscode/launch.json` runs `gdrivelink.py` from the workspace folder.
+Open this folder in VS Code. The included `.vscode/settings.json` automatically selects the virtual environment Python interpreter. Press F5 to run `gdrivelink.py` using the configured launch settings.
 
 ## Build Windows EXE
 
@@ -59,6 +59,10 @@ dist\GDriveLink.exe
 ```
 
 Keep `credentials.json` beside the executable for first-run Google OAuth setup. The build is a single-file executable, so there is no `_internal` folder to distribute. The generated `build\` folder is ignored by Git.
+
+## System Tray Icon
+
+When the app window is minimized, a system tray icon appears in the taskbar notification area. Right-click the icon to access a menu with options to Show the app window or Quit the app. Note: Left-clicking the tray icon does not restore the window in the built .exe due to limitations with pystray in PyInstaller frozen applications.
 
 ## Notes
 

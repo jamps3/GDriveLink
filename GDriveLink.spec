@@ -6,11 +6,10 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('gdrivelink.ico', '.')],
-    hiddenimports=[],
+    excludes=['pycparser.lextab', 'pycparser.yacctab'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
     noarchive=False,
     optimize=0,
 )

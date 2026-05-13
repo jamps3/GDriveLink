@@ -17,7 +17,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from PIL import ImageGrab, ImageTk
+from PIL import Image, ImageGrab, ImageTk
+from pystray import Icon as TrayIcon, Menu, MenuItem
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 
@@ -69,10 +70,12 @@ class DriveUploaderApp:
         self.history_links_by_row: list[str | None] = []
         self.drive_files_by_id: dict[str, dict[str, str]] = {}
         self.drive_cards_by_id: dict[str, Frame] = {}
+        self.tray_icon = None
 
         self._build_ui()
         self._load_history_rows()
         self.root.bind_all("<Control-v>", self._handle_clipboard_paste)
+        self._setup_tray()
         self.root.after(100, self._poll_results)
         self.root.after(100, self._poll_drive_files)
 
@@ -179,12 +182,37 @@ class DriveUploaderApp:
         self.drive_cards_scrollbar.pack(side=RIGHT, fill=Y)
         self._handle_tab_changed()
 
+    def _setup_tray(self) -> None:
+        if not ICON_FILE.exists():
+            return
+        icon_image = Image.open(ICON_FILE)
+        menu = Menu(
+            MenuItem("Show", self._toggle_window),
+            MenuItem("Quit", self._quit_app)
+        )
+        self.tray_icon = TrayIcon("GDriveLink", icon_image, "GDriveLink", menu=menu, action=self._toggle_window)
+        self.tray_icon.run_detached()
+
     def _handle_tab_changed(self, _event=None) -> None:  # type: ignore[no-untyped-def]
         selected_tab = self.tabs.tab(self.tabs.select(), "text")
         if selected_tab == "Drive Folder":
             self.refresh_drive_button.configure(text="Refresh folder files", state="normal")
         else:
             self.refresh_drive_button.configure(text="", state="disabled")
+
+    def _toggle_window(self, icon) -> None:
+        if self.root.state() == 'iconic':
+            self.root.deiconify()
+        else:
+            self.root.iconify()
+
+    def _quit_app(self, icon, item) -> None:
+        self._on_close()
+
+    def _on_close(self) -> None:
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.root.quit()
 
     def _create_scrolled_listbox(self, parent: Frame) -> Listbox:
         list_frame = Frame(parent)
@@ -361,6 +389,14 @@ class DriveUploaderApp:
         if got_result and self.pending_uploads == 0:
             self.progress.stop()
             self.status.set("Done. The latest uploaded link was copied to the clipboard.")
+
+        current_state = self.root.state()
+        if current_state == 'iconic':
+            if not self.tray_icon:
+                self._setup_tray()
+        elif current_state == 'normal' and self.tray_icon:
+            self.tray_icon.stop()
+            self.tray_icon = None
 
         self.root.after(100, self._poll_results)
 
@@ -569,6 +605,7 @@ class DriveUploaderApp:
         webbrowser.open(APP_DIR.as_uri())
 
     def run(self) -> None:
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.mainloop()
 
 
