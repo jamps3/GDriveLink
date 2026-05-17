@@ -9,8 +9,8 @@ import threading
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from tkinter import BOTH, BOTTOM, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, Listbox, Scrollbar, StringVar, Toplevel, filedialog, messagebox
-from tkinter.ttk import Notebook, Progressbar
+from tkinter import BOTH, BOTTOM, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, Listbox, Radiobutton, Scrollbar, StringVar, Toplevel, filedialog, messagebox
+from tkinter.ttk import Notebook, Progressbar, Style
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -28,8 +28,44 @@ RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 CLIENT_SECRET_FILE = APP_DIR / "credentials.json"
 TOKEN_FILE = APP_DIR / "token.pickle"
 HISTORY_FILE = APP_DIR / "upload_history.json"
+SETTINGS_FILE = APP_DIR / "settings.json"
 ICON_FILE = RESOURCE_DIR / "gdrivelink.ico"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+THEME_OPTIONS = ("system", "light", "dark")
+LIGHT_THEME = {
+    "window": "#f5f7fb",
+    "surface": "#ffffff",
+    "surface_alt": "#eef2f7",
+    "border": "#cfd7e3",
+    "text": "#1f2933",
+    "muted": "#52616f",
+    "accent": "#2563eb",
+    "accent_text": "#ffffff",
+    "button": "#e6edf7",
+    "button_active": "#d6e2f2",
+    "entry": "#ffffff",
+    "entry_text": "#111827",
+    "select": "#cfe0ff",
+    "select_text": "#0f172a",
+    "drop": "#f4f7fb",
+}
+DARK_THEME = {
+    "window": "#111827",
+    "surface": "#1f2937",
+    "surface_alt": "#273445",
+    "border": "#4b5563",
+    "text": "#f3f4f6",
+    "muted": "#cbd5e1",
+    "accent": "#60a5fa",
+    "accent_text": "#08111f",
+    "button": "#374151",
+    "button_active": "#4b5563",
+    "entry": "#111827",
+    "entry_text": "#f9fafb",
+    "select": "#1d4ed8",
+    "select_text": "#ffffff",
+    "drop": "#182233",
+}
 
 
 def load_history() -> list[dict[str, str]]:
@@ -51,6 +87,66 @@ def save_history(history: list[dict[str, str]]) -> None:
         history_file.write("\n")
 
 
+def load_settings() -> dict[str, str]:
+    if not SETTINGS_FILE.exists():
+        return {}
+    try:
+        with SETTINGS_FILE.open("r", encoding="utf-8") as settings_file:
+            data = json.load(settings_file)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    theme = data.get("theme", "system")
+    if theme not in THEME_OPTIONS:
+        theme = "system"
+    return {"theme": theme}
+
+
+def save_settings(settings: dict[str, str]) -> None:
+    with SETTINGS_FILE.open("w", encoding="utf-8") as settings_file:
+        json.dump(settings, settings_file, indent=2)
+        settings_file.write("\n")
+
+
+def system_prefers_dark_theme() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            value, _value_type = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return value == 0
+    except OSError:
+        return False
+
+
+def set_windows_dark_title_bar(window, enabled: bool) -> None:  # type: ignore[no-untyped-def]
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        value = ctypes.c_int(1 if enabled else 0)
+        for attribute in (20, 19):
+            result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                attribute,
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+            if result == 0:
+                break
+    except Exception:
+        return
+
+
 class DriveUploaderApp:
     def __init__(self) -> None:
         self.root = TkinterDnD.Tk()
@@ -62,6 +158,10 @@ class DriveUploaderApp:
 
         self.status = StringVar(value="Drop files here, or choose files.")
         self.drive_folder_name = StringVar(value="GDriveLink")
+        self.settings = load_settings()
+        self.theme_choice = StringVar(value=self.settings.get("theme", "system"))
+        self.theme = DARK_THEME if self._effective_theme_name() == "dark" else LIGHT_THEME
+        self.style = Style(self.root)
         self.result_queue: queue.Queue[tuple[str, str, dict[str, str] | str | None, int]] = queue.Queue()
         self.drive_files_queue: queue.Queue[tuple[str, list[dict[str, str]] | str]] = queue.Queue()
         self.pending_uploads = 0
@@ -72,9 +172,12 @@ class DriveUploaderApp:
         self.drive_cards_by_id: dict[str, Frame] = {}
         self.tray_icon = None
 
+        self._configure_ttk_theme()
         self._build_ui()
+        self._apply_theme()
         self._load_history_rows()
         self.root.bind_all("<Control-v>", self._handle_clipboard_paste)
+        self.root.protocol("WM_ICONIFY", self._on_minimize)
         self._setup_tray()
         self.root.after(100, self._poll_results)
         self.root.after(100, self._poll_drive_files)
@@ -108,9 +211,11 @@ class DriveUploaderApp:
         main_tab = Frame(self.tabs)
         history_tab = Frame(self.tabs)
         drive_tab = Frame(self.tabs)
+        settings_tab = Frame(self.tabs)
         self.tabs.add(main_tab, text="Main")
         self.tabs.add(history_tab, text="Upload History")
         self.tabs.add(drive_tab, text="Drive Folder")
+        self.tabs.add(settings_tab, text="Settings")
 
         hint = Label(
             main_tab,
@@ -180,7 +285,23 @@ class DriveUploaderApp:
         )
         self.drive_cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
         self.drive_cards_scrollbar.pack(side=RIGHT, fill=Y)
+        self._build_settings_tab(settings_tab)
         self._handle_tab_changed()
+
+    def _build_settings_tab(self, settings_tab: Frame) -> None:
+        theme_frame = Frame(settings_tab, padx=10, pady=12)
+        theme_frame.pack(fill=X)
+        Label(theme_frame, text="Theme", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
+        for value, label in (("system", "System default"), ("light", "Light"), ("dark", "Dark")):
+            Radiobutton(
+                theme_frame,
+                text=label,
+                value=value,
+                variable=self.theme_choice,
+                command=self._handle_theme_changed,
+                font=("Segoe UI", 10),
+                anchor="w",
+            ).pack(fill=X, pady=(8, 0))
 
     def _setup_tray(self) -> None:
         if not ICON_FILE.exists():
@@ -200,11 +321,141 @@ class DriveUploaderApp:
         else:
             self.refresh_drive_button.configure(text="", state="disabled")
 
+    def _effective_theme_name(self) -> str:
+        selected_theme = self.theme_choice.get() if hasattr(self, "theme_choice") else "system"
+        if selected_theme == "dark" or (selected_theme == "system" and system_prefers_dark_theme()):
+            return "dark"
+        return "light"
+
+    def _handle_theme_changed(self) -> None:
+        selected_theme = self.theme_choice.get()
+        if selected_theme not in THEME_OPTIONS:
+            selected_theme = "system"
+            self.theme_choice.set(selected_theme)
+        self.settings["theme"] = selected_theme
+        save_settings(self.settings)
+        self.theme = DARK_THEME if self._effective_theme_name() == "dark" else LIGHT_THEME
+        self._configure_ttk_theme()
+        self._apply_theme()
+
+    def _configure_ttk_theme(self) -> None:
+        try:
+            self.style.theme_use("clam")
+        except Exception:
+            pass
+        colors = self.theme
+        self.style.configure(
+            ".",
+            background=colors["window"],
+            foreground=colors["text"],
+            fieldbackground=colors["entry"],
+            bordercolor=colors["border"],
+            lightcolor=colors["border"],
+            darkcolor=colors["border"],
+            troughcolor=colors["surface_alt"],
+        )
+        self.style.configure("TNotebook", background=colors["window"], borderwidth=0)
+        self.style.configure(
+            "TNotebook.Tab",
+            background=colors["surface_alt"],
+            foreground=colors["text"],
+            padding=(14, 8),
+        )
+        self.style.map(
+            "TNotebook.Tab",
+            background=[("selected", colors["surface"]), ("active", colors["button_active"])],
+            foreground=[("selected", colors["text"]), ("active", colors["text"])],
+        )
+        self.style.configure(
+            "Horizontal.TProgressbar",
+            background=colors["accent"],
+            troughcolor=colors["surface_alt"],
+            bordercolor=colors["border"],
+            lightcolor=colors["accent"],
+            darkcolor=colors["accent"],
+        )
+
+    def _apply_theme(self, root_widget=None) -> None:  # type: ignore[no-untyped-def]
+        colors = self.theme
+        widget = root_widget or self.root
+        self._style_widget_tree(widget)
+        set_windows_dark_title_bar(widget, self._effective_theme_name() == "dark")
+        for child in widget.winfo_children():
+            if isinstance(child, Toplevel):
+                set_windows_dark_title_bar(child, self._effective_theme_name() == "dark")
+        self.root.option_add("*selectBackground", colors["select"])
+        self.root.option_add("*selectForeground", colors["select_text"])
+
+    def _style_widget_tree(self, widget) -> None:  # type: ignore[no-untyped-def]
+        colors = self.theme
+        widget_class = widget.winfo_class()
+        try:
+            if widget_class in {"Tk", "Toplevel", "Frame", "Labelframe"}:
+                widget.configure(background=colors["window"])
+            elif isinstance(widget, Canvas):
+                widget.configure(background=colors["window"])
+            elif isinstance(widget, Label):
+                background = colors["drop"] if widget is getattr(self, "drop_area", None) else colors["window"]
+                widget.configure(background=background, foreground=colors["text"])
+            elif isinstance(widget, Button):
+                widget.configure(
+                    background=colors["button"],
+                    foreground=colors["text"],
+                    activebackground=colors["button_active"],
+                    activeforeground=colors["text"],
+                    highlightbackground=colors["window"],
+                    highlightcolor=colors["accent"],
+                    relief="raised",
+                )
+            elif isinstance(widget, Entry):
+                widget.configure(
+                    background=colors["entry"],
+                    foreground=colors["entry_text"],
+                    insertbackground=colors["entry_text"],
+                    highlightbackground=colors["border"],
+                    highlightcolor=colors["accent"],
+                )
+            elif isinstance(widget, Listbox):
+                widget.configure(
+                    background=colors["entry"],
+                    foreground=colors["entry_text"],
+                    selectbackground=colors["select"],
+                    selectforeground=colors["select_text"],
+                    highlightbackground=colors["border"],
+                    highlightcolor=colors["accent"],
+                )
+            elif isinstance(widget, Radiobutton):
+                widget.configure(
+                    background=colors["window"],
+                    foreground=colors["text"],
+                    activebackground=colors["window"],
+                    activeforeground=colors["text"],
+                    selectcolor=colors["surface_alt"],
+                    highlightbackground=colors["window"],
+                )
+            elif isinstance(widget, Scrollbar):
+                widget.configure(
+                    background=colors["button"],
+                    activebackground=colors["button_active"],
+                    troughcolor=colors["surface_alt"],
+                    highlightbackground=colors["window"],
+                )
+        except Exception:
+            pass
+
+        for child in widget.winfo_children():
+            self._style_widget_tree(child)
+
     def _toggle_window(self, icon) -> None:
-        if self.root.state() == 'iconic':
+        if self.root.state() == 'withdrawn':
             self.root.deiconify()
         else:
-            self.root.iconify()
+            self.root.withdraw()
+
+    def _on_minimize(self) -> None:
+        self.root.withdraw()
+        if not self.tray_icon:
+            self._setup_tray()
 
     def _quit_app(self, icon, item) -> None:
         self._on_close()
@@ -308,6 +559,7 @@ class DriveUploaderApp:
             text="OK",
             command=lambda: self._confirm_clipboard_upload(preview_window, image, filename.get()),
         ).pack(side=RIGHT, padx=(0, 8))
+        self._apply_theme(preview_window)
 
     def _confirm_clipboard_upload(self, preview_window: Toplevel, image, filename: str) -> None:  # type: ignore[no-untyped-def]
         preview_window.destroy()
@@ -391,7 +643,7 @@ class DriveUploaderApp:
             self.status.set("Done. The latest uploaded link was copied to the clipboard.")
 
         current_state = self.root.state()
-        if current_state == 'iconic':
+        if current_state == 'withdrawn':
             if not self.tray_icon:
                 self._setup_tray()
         elif current_state == 'normal' and self.tray_icon:
@@ -524,6 +776,7 @@ class DriveUploaderApp:
             padx=10,
             pady=10,
         ).pack(fill=X)
+        self._apply_theme(self.drive_cards_frame)
 
     def _add_drive_file_card(self, item: dict[str, str]) -> None:
         file_id = item.get("id", "")
@@ -568,6 +821,7 @@ class DriveUploaderApp:
             text="Delete",
             command=lambda current_id=file_id: self._delete_drive_file(current_id),
         ).pack(side=RIGHT, padx=(0, 8))
+        self._apply_theme(card)
 
     def _copy_drive_link_worker(self, item: dict[str, str]) -> None:
         try:

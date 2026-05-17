@@ -4,6 +4,8 @@ GDriveLink is a small Python desktop app for quickly turning local files and cli
 
 The app also keeps local upload history in `upload_history.json` and includes a Drive Folder tab with compact file cards for refreshing the selected Drive folder, viewing each file's current sharing status, and copying links from existing Drive files after ensuring link sharing is enabled.
 
+![Screenshot](screenshot.png)
+
 ## Setup
 
 1. Create a Google Cloud project.

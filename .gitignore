@@ -2,6 +2,7 @@ credentials.json
 dist/credentials.json
 token.pickle
 upload_history.json
+settings.json
 .venv/
 __pycache__/
 *.py[cod]
