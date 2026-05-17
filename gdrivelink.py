@@ -177,7 +177,7 @@ class DriveUploaderApp:
         self._apply_theme()
         self._load_history_rows()
         self.root.bind_all("<Control-v>", self._handle_clipboard_paste)
-        self.root.protocol("WM_ICONIFY", self._on_minimize)
+        self.root.bind("<Unmap>", self._handle_window_unmap)
         self._setup_tray()
         self.root.after(100, self._poll_results)
         self.root.after(100, self._poll_drive_files)
@@ -304,14 +304,16 @@ class DriveUploaderApp:
             ).pack(fill=X, pady=(8, 0))
 
     def _setup_tray(self) -> None:
+        if self.tray_icon:
+            return
         if not ICON_FILE.exists():
             return
         icon_image = Image.open(ICON_FILE)
         menu = Menu(
-            MenuItem("Show", self._toggle_window),
+            MenuItem("Show", self._show_window_from_tray, default=True),
             MenuItem("Quit", self._quit_app)
         )
-        self.tray_icon = TrayIcon("GDriveLink", icon_image, "GDriveLink", menu=menu, action=self._toggle_window)
+        self.tray_icon = TrayIcon("GDriveLink", icon_image, "GDriveLink", menu=menu)
         self.tray_icon.run_detached()
 
     def _handle_tab_changed(self, _event=None) -> None:  # type: ignore[no-untyped-def]
@@ -446,19 +448,40 @@ class DriveUploaderApp:
         for child in widget.winfo_children():
             self._style_widget_tree(child)
 
-    def _toggle_window(self, icon) -> None:
-        if self.root.state() == 'withdrawn':
-            self.root.deiconify()
-        else:
-            self.root.withdraw()
+    def _run_on_ui_thread(self, callback) -> None:  # type: ignore[no-untyped-def]
+        try:
+            self.root.after(0, callback)
+        except RuntimeError:
+            pass
 
-    def _on_minimize(self) -> None:
+    def _show_window_from_tray(self, icon=None, item=None) -> None:  # type: ignore[no-untyped-def]
+        self._run_on_ui_thread(self._show_window)
+
+    def _show_window(self) -> None:
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _toggle_window(self, icon=None, item=None) -> None:  # type: ignore[no-untyped-def]
+        self._run_on_ui_thread(self._toggle_window_on_ui)
+
+    def _toggle_window_on_ui(self) -> None:
+        if self.root.state() == 'withdrawn':
+            self._show_window()
+        else:
+            self._hide_to_tray()
+
+    def _handle_window_unmap(self, _event=None) -> None:  # type: ignore[no-untyped-def]
+        if self.root.state() == "iconic":
+            self.root.after_idle(self._hide_to_tray)
+
+    def _hide_to_tray(self) -> None:
         self.root.withdraw()
         if not self.tray_icon:
             self._setup_tray()
 
     def _quit_app(self, icon, item) -> None:
-        self._on_close()
+        self._run_on_ui_thread(self._on_close)
 
     def _on_close(self) -> None:
         if self.tray_icon:

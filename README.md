@@ -64,7 +64,7 @@ Keep `credentials.json` beside the executable for first-run Google OAuth setup. 
 
 ## System Tray Icon
 
-When the app window is minimized, a system tray icon appears in the taskbar notification area. Right-click the icon to access a menu with options to Show the app window or Quit the app. Note: Left-clicking the tray icon does not restore the window in the built .exe due to limitations with pystray in PyInstaller frozen applications.
+When the app window is minimized, a system tray icon appears in the taskbar notification area. Left-click the tray icon to show the app window. You can also right-click the icon to access a menu with options to Show the app window or Quit the app.
 
 ## Notes
 
