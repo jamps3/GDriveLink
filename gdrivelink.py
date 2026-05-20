@@ -6,7 +6,9 @@ import queue
 import sys
 import tempfile
 import threading
+import urllib.request
 import webbrowser
+from urllib.parse import urlparse
 from datetime import datetime
 from pathlib import Path
 from tkinter import BOTH, BOTTOM, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, Listbox, Radiobutton, Scrollbar, StringVar, Toplevel, filedialog, messagebox
@@ -311,6 +313,7 @@ class DriveUploaderApp:
         icon_image = Image.open(ICON_FILE)
         menu = Menu(
             MenuItem("Show", self._show_window_from_tray, default=True),
+            MenuItem("Paste link", self._paste_link_from_tray),
             MenuItem("Quit", self._quit_app)
         )
         self.tray_icon = TrayIcon("GDriveLink", icon_image, "GDriveLink", menu=menu)
@@ -456,6 +459,30 @@ class DriveUploaderApp:
 
     def _show_window_from_tray(self, icon=None, item=None) -> None:  # type: ignore[no-untyped-def]
         self._run_on_ui_thread(self._show_window)
+
+    def _paste_link_from_tray(self, icon=None, item=None) -> None:  # type: ignore[no-untyped-def]
+        self._run_on_ui_thread(self._paste_link)
+
+    def _paste_link(self) -> None:
+        try:
+            link = self.root.clipboard_get()
+        except Exception:
+            messagebox.showerror(APP_TITLE, "Could not read clipboard.")
+            return
+        if not link or not link.strip().lower().startswith(("http://", "https://")):
+            messagebox.showinfo(APP_TITLE, "Clipboard does not contain a valid link.")
+            return
+        link = link.strip()
+        try:
+            parsed = urlparse(link)
+            filename = Path(parsed.path).name or "downloaded_file"
+            if not Path(filename).suffix:
+                filename += ".bin"
+            temp_path = Path(tempfile.gettempdir()) / filename
+            urllib.request.urlretrieve(link, temp_path)
+            self._upload_files([temp_path], cleanup_after_upload=True)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"Failed to download or upload from link:\n{exc}")
 
     def _show_window(self) -> None:
         self.root.deiconify()
