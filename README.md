@@ -32,7 +32,7 @@ python -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe gdrivelink.py
 ```
 
-On first run, Google opens an OAuth sign-in page. After authorization, the app stores `token.pickle` beside the script so future uploads do not need another sign-in unless the token expires or is revoked.
+On first run, Google opens an OAuth sign-in page. After authorization, the app stores `token.pickle` beside the script so future uploads do not need another sign-in. If the token expires or is revoked the app will automatically prompt for re-authorization (opening the sign-in URL in your browser).
 
 You can also copy an image to the clipboard and press `Ctrl+V` in the app. The app shows a preview first. You can edit the filename, then pressing OK uploads the image as a PNG and copies the share link to the clipboard.
 

@@ -15,6 +15,7 @@ from tkinter import BOTH, BOTTOM, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry,
 from tkinter.ttk import Notebook, Progressbar, Style
 
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -917,11 +918,25 @@ def get_drive_service():
     credentials: Credentials | None = None
 
     if TOKEN_FILE.exists():
-        with TOKEN_FILE.open("rb") as token:
-            credentials = pickle.load(token)
+        try:
+            with TOKEN_FILE.open("rb") as token:
+                credentials = pickle.load(token)
+        except Exception:
+            credentials = None
+            try:
+                TOKEN_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     if credentials and credentials.expired and credentials.refresh_token:
-        credentials.refresh(Request())
+        try:
+            credentials.refresh(Request())
+        except RefreshError:
+            credentials = None
+            try:
+                TOKEN_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     if not credentials or not credentials.valid:
         if not CLIENT_SECRET_FILE.exists():
