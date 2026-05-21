@@ -170,7 +170,7 @@ class DriveUploaderApp:
         self.pending_uploads = 0
         self.preview_photo = None
         self.history = load_history()
-        self.history_links_by_row: list[str | None] = []
+        self.history_cards: list[Frame] = []
         self.drive_files_by_id: dict[str, dict[str, str]] = {}
         self.drive_cards_by_id: dict[str, Frame] = {}
         self.tray_icon = None
@@ -178,7 +178,7 @@ class DriveUploaderApp:
         self._configure_ttk_theme()
         self._build_ui()
         self._apply_theme()
-        self._load_history_rows()
+        self._load_history_cards()
         self.root.bind_all("<Control-v>", self._handle_clipboard_paste)
         self.root.bind("<Unmap>", self._handle_window_unmap)
         self._setup_tray()
@@ -209,7 +209,6 @@ class DriveUploaderApp:
 
         self.tabs = Notebook(container)
         self.tabs.pack(fill=BOTH, expand=True, pady=(12, 0))
-        self.tabs.bind("<<NotebookTabChanged>>", self._handle_tab_changed)
 
         main_tab = Frame(self.tabs)
         history_tab = Frame(self.tabs)
@@ -259,15 +258,32 @@ class DriveUploaderApp:
             font=("Segoe UI", 12, "bold"),
             padx=22,
             pady=10,
-        ).pack(side=LEFT)
-        Button(controls, text="Open token folder", command=self._open_app_folder).pack(side=LEFT, padx=(8, 0))
+        ).pack(expand=True)
 
         self.progress = Progressbar(main_tab, mode="indeterminate")
         self.progress.pack(fill="x", pady=(0, 8))
 
         Label(main_tab, textvariable=self.status, anchor="w", font=("Segoe UI", 10)).pack(fill="x", pady=(0, 8))
 
-        self.results = self._create_scrolled_listbox(history_tab)
+        self.history_cards_canvas = Canvas(history_tab, highlightthickness=0)
+        self.history_cards_scrollbar = Scrollbar(history_tab, orient="vertical", command=self.history_cards_canvas.yview)
+        self.history_cards_frame = Frame(self.history_cards_canvas)
+        self.history_cards_frame.bind(
+            "<Configure>",
+            lambda _event: self.history_cards_canvas.configure(scrollregion=self.history_cards_canvas.bbox("all")),
+        )
+        self.history_cards_canvas_window = self.history_cards_canvas.create_window(
+            (0, 0),
+            window=self.history_cards_frame,
+            anchor="nw",
+        )
+        self.history_cards_canvas.configure(yscrollcommand=self.history_cards_scrollbar.set)
+        self.history_cards_canvas.bind(
+            "<Configure>",
+            lambda event: self.history_cards_canvas.itemconfigure(self.history_cards_canvas_window, width=event.width),
+        )
+        self.history_cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        self.history_cards_scrollbar.pack(side=RIGHT, fill=Y)
 
         self.drive_cards_canvas = Canvas(drive_tab, highlightthickness=0)
         self.drive_cards_scrollbar = Scrollbar(drive_tab, orient="vertical", command=self.drive_cards_canvas.yview)
@@ -289,7 +305,6 @@ class DriveUploaderApp:
         self.drive_cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
         self.drive_cards_scrollbar.pack(side=RIGHT, fill=Y)
         self._build_settings_tab(settings_tab)
-        self._handle_tab_changed()
 
     def _build_settings_tab(self, settings_tab: Frame) -> None:
         theme_frame = Frame(settings_tab, padx=10, pady=12)
@@ -306,6 +321,16 @@ class DriveUploaderApp:
                 anchor="w",
             ).pack(fill=X, pady=(8, 0))
 
+        data_frame = Frame(settings_tab, padx=10, pady=12)
+        data_frame.pack(fill=X)
+        Label(data_frame, text="App folder", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
+        Button(
+            data_frame,
+            text="Open token folder",
+            command=self._open_app_folder,
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(8, 0))
+
     def _setup_tray(self) -> None:
         if self.tray_icon:
             return
@@ -319,13 +344,6 @@ class DriveUploaderApp:
         )
         self.tray_icon = TrayIcon("GDriveLink", icon_image, "GDriveLink", menu=menu)
         self.tray_icon.run_detached()
-
-    def _handle_tab_changed(self, _event=None) -> None:  # type: ignore[no-untyped-def]
-        selected_tab = self.tabs.tab(self.tabs.select(), "text")
-        if selected_tab == "Drive Folder":
-            self.refresh_drive_button.configure(text="Refresh folder files", state="normal")
-        else:
-            self.refresh_drive_button.configure(text="", state="disabled")
 
     def _effective_theme_name(self) -> str:
         selected_theme = self.theme_choice.get() if hasattr(self, "theme_choice") else "system"
@@ -516,37 +534,127 @@ class DriveUploaderApp:
             self.tray_icon.stop()
         self.root.quit()
 
-    def _create_scrolled_listbox(self, parent: Frame) -> Listbox:
-        list_frame = Frame(parent)
-        list_frame.pack(fill=BOTH, expand=True)
+    def _clear_history_cards(self) -> None:
+        self.history_cards.clear()
+        for child in self.history_cards_frame.winfo_children():
+            child.destroy()
 
-        listbox = Listbox(list_frame, font=("Consolas", 10), activestyle="dotbox")
-        vertical_scrollbar = Scrollbar(list_frame, orient="vertical", command=listbox.yview)
-        horizontal_scrollbar = Scrollbar(list_frame, orient="horizontal", command=listbox.xview)
+    def _show_history_message(self, message: str) -> None:
+        Label(
+            self.history_cards_frame,
+            text=message,
+            anchor="w",
+            justify=LEFT,
+            font=("Segoe UI", 10),
+            padx=10,
+            pady=10,
+        ).pack(fill=X)
+        self._apply_theme(self.history_cards_frame)
 
-        listbox.config(
-            xscrollcommand=horizontal_scrollbar.set,
-            yscrollcommand=vertical_scrollbar.set,
+    def _load_history_cards(self) -> None:
+        self._clear_history_cards()
+        if not self.history:
+            self._show_history_message("No past uploads yet. Files you upload will be listed here as cards.")
+        else:
+            for item in self.history:
+                self._add_history_card(item)
+
+    def _add_history_card(self, item: dict[str, str]) -> None:
+        if len(self.history_cards) == 0 and self.history_cards_frame.winfo_children():
+            for child in list(self.history_cards_frame.winfo_children()):
+                child.destroy()
+        card = Frame(self.history_cards_frame, relief="ridge", borderwidth=1, padx=10, pady=8)
+        card.pack(fill=X, pady=(0, 8))
+        self.history_cards.append(card)
+
+        top_row = Frame(card)
+        top_row.pack(fill=X)
+
+        name = item.get("name", "")
+        Label(top_row, text=name, anchor="w", font=("Segoe UI", 10, "bold")).pack(side=LEFT, fill=X, expand=True)
+
+        folder_name = item.get("folder_name", "")
+        Label(top_row, text=f"[{folder_name}]", anchor="e", font=("Segoe UI", 9)).pack(side=RIGHT, padx=(8, 0))
+
+        permission = item.get("sharingStatus", "Anyone with link can read")
+        Label(top_row, text=permission, anchor="e", font=("Segoe UI", 9)).pack(side=RIGHT, padx=(8, 0))
+
+        meta_row = Frame(card)
+        meta_row.pack(fill=X, pady=(5, 0))
+
+        uploaded_at = item.get("uploaded_at", "")
+        Label(meta_row, text=f"Uploaded: {uploaded_at}", anchor="w", font=("Segoe UI", 9)).pack(
+            side=LEFT, fill=X, expand=True
         )
 
-        vertical_scrollbar.pack(side=RIGHT, fill=Y)
-        horizontal_scrollbar.pack(side=BOTTOM, fill=X)
-        listbox.pack(side=LEFT, fill=BOTH, expand=True)
-        return listbox
+        Button(
+            meta_row,
+            text="Open",
+            command=lambda current_item=item: self._open_history_link(current_item),
+        ).pack(side=RIGHT, padx=(8, 0))
+        Button(
+            meta_row,
+            text="Set sharing",
+            command=lambda current_item=item: self._set_history_sharing(current_item),
+        ).pack(side=RIGHT)
+        Button(
+            meta_row,
+            text="Copy link",
+            command=lambda current_item=item: self._copy_history_link(current_item),
+        ).pack(side=RIGHT)
+        Button(
+            meta_row,
+            text="Remove",
+            command=lambda current_item=item, current_card=card: self._remove_history_item(current_item, current_card),
+        ).pack(side=RIGHT, padx=(0, 8))
+        self._apply_theme(card)
 
-    def _load_history_rows(self) -> None:
-        self.results.delete(0, END)
-        self.history_links_by_row.clear()
-        for item in self.history:
-            self._insert_history_row(item)
+    def _open_history_link(self, item: dict[str, str]) -> None:
+        link = item.get("webViewLink")
+        if link:
+            webbrowser.open(link)
 
-    def _insert_history_row(self, item: dict[str, str]) -> None:
-        uploaded_at = item.get("uploaded_at", "")
-        folder_name = item.get("folder_name", "")
-        name = item.get("name", "")
+    def _copy_history_link(self, item: dict[str, str]) -> None:
         link = item.get("webViewLink", "")
-        self.history_links_by_row.append(link or None)
-        self.results.insert(END, f"{uploaded_at}  [{folder_name}]  {name}  ->  {link}")
+        if link:
+            self._copy_to_clipboard(link)
+            self.status.set("Link copied to the clipboard.")
+
+    def _remove_history_item(self, item: dict[str, str], card: Frame) -> None:
+        try:
+            self.history.remove(item)
+        except ValueError:
+            pass
+        save_history(self.history)
+        try:
+            self.history_cards.remove(card)
+        except ValueError:
+            pass
+        card.destroy()
+        if not self.history:
+            self._show_history_message("No past uploads yet. Files you upload will be listed here as cards.")
+
+    def _set_history_sharing(self, item: dict[str, str]) -> None:
+        name = item.get("name", "file")
+        self.status.set(f"Updating sharing permission for '{name}'...")
+        worker = threading.Thread(target=self._set_history_sharing_worker, args=(item,), daemon=True)
+        worker.start()
+
+    def _set_history_sharing_worker(self, item: dict[str, str]) -> None:
+        name = item.get("name", "file")
+        try:
+            service = get_drive_service()
+            new_status, shared_file = cycle_sharing_permission(service, item["id"])
+            if "webViewLink" in shared_file:
+                item["webViewLink"] = shared_file["webViewLink"]
+            item["sharingStatus"] = new_status
+            save_history(self.history)
+            def notify_success():
+                self._load_history_cards()
+                self.status.set(f"Sharing set to '{new_status}' for '{name}'.")
+            self._run_on_ui_thread(notify_success)
+        except Exception as exc:
+            self._run_on_ui_thread(lambda e=str(exc): self.status.set(f"Could not set sharing for '{name}': {e}"))
 
     def _choose_files(self) -> None:
         filenames = filedialog.askopenfilenames(title="Choose files to upload")
@@ -657,6 +765,7 @@ class DriveUploaderApp:
                     uploaded_file = upload_and_share(service, file_path, folder_id)
                     uploaded_file["folder_name"] = folder_name
                     uploaded_file["uploaded_at"] = datetime.now().isoformat(timespec="seconds")
+                    uploaded_file["sharingStatus"] = "Anyone with link can read"
                     self.result_queue.put(("success", file_path.name, uploaded_file, 1))
                 except Exception as exc:  # noqa: BLE001 - surface upload errors in the UI.
                     self.result_queue.put(("error", file_path.name, str(exc), 1))
@@ -682,12 +791,11 @@ class DriveUploaderApp:
             if kind == "success" and isinstance(detail, dict):
                 self.history.append(detail)
                 save_history(self.history)
-                self._insert_history_row(detail)
+                self._add_history_card(detail)
                 link = detail.get("webViewLink", "")
                 self._copy_to_clipboard(link)
             else:
-                self.history_links_by_row.append(None)
-                self.results.insert(END, f"{name}  ->  ERROR: {detail}")
+                self.status.set(f"{name}  ->  ERROR: {detail}")
 
         if got_result and self.pending_uploads == 0:
             self.progress.stop()
@@ -703,27 +811,11 @@ class DriveUploaderApp:
 
         self.root.after(100, self._poll_results)
 
-    def _open_selected_link(self) -> None:
-        link = self._selected_link()
-        if link:
-            webbrowser.open(link)
-
-    def _copy_selected_link(self) -> None:
-        link = self._selected_link()
-        if link:
-            self._copy_to_clipboard(link)
-            self.status.set("Selected link copied to the clipboard.")
-
-    def _selected_link(self) -> str | None:
-        selection = self.results.curselection()
-        if not selection:
-            return None
-        row = selection[0]
-        if row < len(self.history_links_by_row) and self.history_links_by_row[row]:
-            return self.history_links_by_row[row]
-        return None
-
     def _refresh_drive_files(self) -> None:
+        for tab_id in self.tabs.tabs():
+            if self.tabs.tab(tab_id, "text") == "Drive Folder":
+                self.tabs.select(tab_id)
+                break
         folder_name = self.drive_folder_name.get().strip() or "GDriveLink"
         self.drive_folder_name.set(folder_name)
         self.status.set(f"Loading files in Drive folder '{folder_name}'...")
@@ -766,6 +858,13 @@ class DriveUploaderApp:
                 self._clear_drive_cards()
                 self._show_drive_message(f"ERROR: {detail}")
                 self.status.set("Could not update sharing permission.")
+            elif kind == "perm_success" and isinstance(detail, list) and detail:
+                self.status.set("Sharing permission updated for Drive file.")
+                self._refresh_drive_files()
+            elif kind == "perm_error":
+                self._clear_drive_cards()
+                self._show_drive_message(f"ERROR: {detail}")
+                self.status.set("Could not update sharing permission.")
             elif kind == "delete_success":
                 if isinstance(detail, dict):
                     file_id = detail.get("id", "")
@@ -790,6 +889,14 @@ class DriveUploaderApp:
             return
         self.status.set("Updating file sharing permission before copying link...")
         worker = threading.Thread(target=self._copy_drive_link_worker, args=(item,), daemon=True)
+        worker.start()
+
+    def _set_drive_file_sharing(self, file_id: str) -> None:
+        item = self.drive_files_by_id.get(file_id)
+        if not item:
+            return
+        self.status.set("Updating file sharing permission...")
+        worker = threading.Thread(target=self._set_drive_sharing_worker, args=(item,), daemon=True)
         worker.start()
 
     def _delete_drive_file(self, file_id: str) -> None:
@@ -869,6 +976,11 @@ class DriveUploaderApp:
         ).pack(side=RIGHT)
         Button(
             meta_row,
+            text="Set sharing",
+            command=lambda current_id=file_id: self._set_drive_file_sharing(current_id),
+        ).pack(side=RIGHT)
+        Button(
+            meta_row,
             text="Delete",
             command=lambda current_id=file_id: self._delete_drive_file(current_id),
         ).pack(side=RIGHT, padx=(0, 8))
@@ -884,6 +996,17 @@ class DriveUploaderApp:
             self.drive_files_queue.put(("copy_success", [shared_file]))
         except Exception as exc:  # noqa: BLE001 - surface Drive errors in the UI.
             self.drive_files_queue.put(("copy_error", str(exc)))
+
+    def _set_drive_sharing_worker(self, item: dict[str, str]) -> None:
+        try:
+            service = get_drive_service()
+            new_status, shared_file = cycle_sharing_permission(service, item["id"])
+            shared_file["name"] = item.get("name", "")
+            shared_file["modifiedTime"] = item.get("modifiedTime", "")
+            shared_file["sharingStatus"] = new_status
+            self.drive_files_queue.put(("perm_success", [shared_file]))
+        except Exception as exc:  # noqa: BLE001 - surface Drive errors in the UI.
+            self.drive_files_queue.put(("perm_error", str(exc)))
 
     def _delete_drive_file_worker(self, item: dict[str, str]) -> None:
         try:
@@ -1037,6 +1160,40 @@ def ensure_anyone_reader_permission(service, file_id: str) -> dict[str, str]:  #
         ).execute()
 
     return service.files().get(fileId=file_id, fields="id, webViewLink").execute()
+
+
+def _remove_anyone_permissions(service, file_id: str) -> None:  # type: ignore[no-untyped-def]
+    permissions = (
+        service.permissions()
+        .list(fileId=file_id, fields="permissions(id, type)")
+        .execute()
+        .get("permissions", [])
+    )
+    for permission in permissions:
+        if permission.get("type") == "anyone":
+            try:
+                service.permissions().delete(fileId=file_id, permissionId=permission["id"]).execute()
+            except Exception:
+                pass
+
+
+def cycle_sharing_permission(service, file_id: str) -> tuple[str, dict[str, str]]:  # type: ignore[no-untyped-def]
+    current = get_sharing_status(service, file_id)
+    if current == "Restricted":
+        file_info = ensure_anyone_reader_permission(service, file_id)
+        return "Anyone with link can read", file_info
+    if current == "Anyone with link can read":
+        _remove_anyone_permissions(service, file_id)
+        service.permissions().create(
+            fileId=file_id,
+            body={"type": "anyone", "role": "reader", "allowFileDiscovery": True},
+            fields="id",
+        ).execute()
+        file_info = service.files().get(fileId=file_id, fields="id, webViewLink").execute()
+        return "Public on web can read", file_info
+    _remove_anyone_permissions(service, file_id)
+    file_info = service.files().get(fileId=file_id, fields="id, webViewLink").execute()
+    return "Restricted", file_info
 
 
 def trash_drive_file(service, file_id: str) -> None:  # type: ignore[no-untyped-def]
