@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pickle
 import queue
+import re
 import sys
 import tempfile
 import threading
@@ -81,7 +82,9 @@ def load_history() -> list[dict[str, str]]:
         return []
     if not isinstance(data, list):
         return []
-    return [item for item in data if isinstance(item, dict)]
+    items = [item for item in data if isinstance(item, dict)]
+    items.sort(key=lambda item: item.get("uploaded_at", ""), reverse=True)
+    return items
 
 
 def save_history(history: list[dict[str, str]]) -> None:
@@ -167,6 +170,7 @@ class DriveUploaderApp:
         self.style = Style(self.root)
         self.result_queue: queue.Queue[tuple[str, str, dict[str, str] | str | None, int]] = queue.Queue()
         self.drive_files_queue: queue.Queue[tuple[str, list[dict[str, str]] | str]] = queue.Queue()
+        self.decision_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
         self.pending_uploads = 0
         self.preview_photo = None
         self.history = load_history()
@@ -206,6 +210,16 @@ class DriveUploaderApp:
             pady=10,
         )
         self.refresh_drive_button.pack(side=RIGHT)
+
+        clipboard_button = Button(
+            header,
+            text="Upload from clipboard",
+            command=self._handle_clipboard_paste,
+            font=("Segoe UI", 12, "bold"),
+            padx=22,
+            pady=10,
+        )
+        clipboard_button.pack(side=RIGHT, padx=(0, 8))
 
         self.tabs = Notebook(container)
         self.tabs.pack(fill=BOTH, expand=True, pady=(12, 0))
@@ -559,13 +573,19 @@ class DriveUploaderApp:
             for item in self.history:
                 self._add_history_card(item)
 
-    def _add_history_card(self, item: dict[str, str]) -> None:
+    def _add_history_card(self, item: dict[str, str], at_top: bool = False) -> None:
         if len(self.history_cards) == 0 and self.history_cards_frame.winfo_children():
             for child in list(self.history_cards_frame.winfo_children()):
                 child.destroy()
         card = Frame(self.history_cards_frame, relief="ridge", borderwidth=1, padx=10, pady=8)
-        card.pack(fill=X, pady=(0, 8))
-        self.history_cards.append(card)
+        if at_top and self.history_cards_frame.winfo_children():
+            card.pack(fill=X, pady=(0, 8), before=self.history_cards_frame.winfo_children()[0])
+        else:
+            card.pack(fill=X, pady=(0, 8))
+        if at_top:
+            self.history_cards.insert(0, card)
+        else:
+            self.history_cards.append(card)
 
         top_row = Frame(card)
         top_row.pack(fill=X)
@@ -677,8 +697,8 @@ class DriveUploaderApp:
             return "break"
 
         if isinstance(image, list):
-            image_paths = [Path(path) for path in image]
-            self._upload_files(image_paths)
+            paths = [Path(p) for p in image]
+            self._show_clipboard_files_preview(paths)
             return "break"
 
         self._show_clipboard_preview(image)
@@ -707,17 +727,23 @@ class DriveUploaderApp:
         filename_frame = Frame(preview_window)
         filename_frame.pack(fill=X, padx=14, pady=(0, 14))
         Label(filename_frame, text="Filename", anchor="w", font=("Segoe UI", 10)).pack(side=LEFT)
-        Entry(filename_frame, textvariable=filename).pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
+        filename_entry = Entry(filename_frame, textvariable=filename)
+        filename_entry.pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
 
         buttons = Frame(preview_window)
         buttons.pack(fill=X, padx=14, pady=(0, 14))
 
         Button(buttons, text="Cancel", command=preview_window.destroy).pack(side=RIGHT)
-        Button(
+        ok_button = Button(
             buttons,
             text="OK",
             command=lambda: self._confirm_clipboard_upload(preview_window, image, filename.get()),
-        ).pack(side=RIGHT, padx=(0, 8))
+        )
+        ok_button.pack(side=RIGHT, padx=(0, 8))
+        preview_window.bind("<Return>", lambda e: ok_button.invoke())
+        preview_window.bind("<Escape>", lambda e: preview_window.destroy())
+        filename_entry.focus_set()
+        filename_entry.icursor(END)
         self._apply_theme(preview_window)
 
     def _confirm_clipboard_upload(self, preview_window: Toplevel, image, filename: str) -> None:  # type: ignore[no-untyped-def]
@@ -726,6 +752,50 @@ class DriveUploaderApp:
         temp_path = Path(tempfile.gettempdir()) / clean_filename
         image.save(temp_path, "PNG")
         self._upload_files([temp_path], cleanup_after_upload=True)
+
+    def _show_clipboard_files_preview(self, paths: list[Path]) -> None:  # type: ignore[no-untyped-def]
+        preview_window = Toplevel(self.root)
+        preview_window.title("Clipboard files preview")
+        preview_window.transient(self.root)
+        preview_window.grab_set()
+        preview_window.minsize(360, 300)
+        Label(preview_window, text="Upload clipboard files?", font=("Segoe UI", 12, "bold")).pack(
+            fill=X,
+            padx=14,
+            pady=(14, 8),
+        )
+        info_frame = Frame(preview_window)
+        info_frame.pack(fill=BOTH, expand=True, padx=14, pady=(0, 14))
+        for path in paths:
+            size = 0
+            try:
+                size = path.stat().st_size
+            except OSError:
+                pass
+            if size >= 1048576:
+                size_str = f"{size / 1048576:.1f} MB"
+            elif size >= 1024:
+                size_str = f"{size / 1024:.1f} KB"
+            else:
+                size_str = f"{size} B"
+            Label(info_frame, text=f"{path.name} ({size_str})", anchor="w", font=("Segoe UI", 10)).pack(fill=X, pady=(0, 4))
+        buttons = Frame(preview_window)
+        buttons.pack(fill=X, padx=14, pady=(0, 14))
+        Button(buttons, text="Cancel", command=preview_window.destroy).pack(side=RIGHT)
+        ok_button = Button(
+            buttons,
+            text="OK",
+            command=lambda: self._confirm_clipboard_files_upload(preview_window, paths),
+        )
+        ok_button.pack(side=RIGHT, padx=(0, 8))
+        preview_window.bind("<Return>", lambda e: ok_button.invoke())
+        preview_window.bind("<Escape>", lambda e: preview_window.destroy())
+        ok_button.focus_set()
+        self._apply_theme(preview_window)
+
+    def _confirm_clipboard_files_upload(self, preview_window: Toplevel, paths: list[Path]) -> None:  # type: ignore[no-untyped-def]
+        preview_window.destroy()
+        self._upload_files(paths)
 
     def _clean_clipboard_filename(self, filename: str) -> str:
         clean_name = Path(filename.strip()).name
@@ -762,7 +832,21 @@ class DriveUploaderApp:
             folder_id = get_or_create_folder(service, folder_name)
             for file_path in files:
                 try:
-                    uploaded_file = upload_and_share(service, file_path, folder_id)
+                    name = file_path.name
+                    existing_id = find_existing_file_in_folder(service, folder_id, name)
+                    if existing_id:
+                        suggested = get_unique_filename(service, folder_id, name)
+                        self.result_queue.put(("conflict", name, (file_path, folder_id, existing_id, suggested), 0))
+                        action, chosen_name = self.decision_queue.get()
+                        if action == "cancel":
+                            continue
+                        elif action == "rename":
+                            final_name = chosen_name or suggested
+                            uploaded_file = upload_and_share(service, file_path, folder_id, final_name)
+                        else:
+                            uploaded_file = overwrite_file_content(service, file_path, existing_id)
+                    else:
+                        uploaded_file = upload_and_share(service, file_path, folder_id)
                     uploaded_file["folder_name"] = folder_name
                     uploaded_file["uploaded_at"] = datetime.now().isoformat(timespec="seconds")
                     uploaded_file["sharingStatus"] = "Anyone with link can read"
@@ -778,6 +862,87 @@ class DriveUploaderApp:
         except Exception as exc:  # noqa: BLE001 - surface auth errors in the UI.
             self.result_queue.put(("fatal", "Google Drive authorization failed", str(exc), len(files)))
 
+    def _show_duplicate_dialog(self, original_name: str, suggested_name: str) -> tuple[str, str | None]:
+        self._show_root_for_modal()
+        dialog = Toplevel(self.root)
+        dialog.title("Duplicate file")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.minsize(480, 160)
+
+        Label(dialog, text=f"A file named '{original_name}' already exists in the Drive folder.", font=("Segoe UI", 10)).pack(
+            fill=X, padx=14, pady=(14, 4)
+        )
+        Label(dialog, text="New name for renamed copy (editable):", font=("Segoe UI", 10)).pack(
+            fill=X, padx=14, pady=(0, 4)
+        )
+
+        name_var = StringVar(value=suggested_name)
+        entry = Entry(dialog, textvariable=name_var)
+        entry.pack(fill=X, padx=14, pady=(0, 14))
+
+        buttons = Frame(dialog)
+        buttons.pack(fill=X, padx=14, pady=(0, 14))
+
+        result: dict[str, str | None] = {"action": None, "name": None}
+
+        def on_overwrite():
+            result["action"] = "overwrite"
+            result["name"] = None
+            dialog.destroy()
+
+        def on_rename():
+            new_name = name_var.get().strip() or suggested_name
+            result["action"] = "rename"
+            result["name"] = new_name
+            dialog.destroy()
+
+        def on_cancel():
+            result["action"] = "cancel"
+            result["name"] = None
+            dialog.destroy()
+
+        Button(buttons, text="Overwrite existing", command=on_overwrite).pack(side=LEFT)
+        Button(buttons, text="Rename with name above", command=on_rename).pack(side=LEFT, padx=(8, 0))
+        Button(buttons, text="Cancel / Skip", command=on_cancel).pack(side=RIGHT)
+
+        entry.focus_set()
+        entry.icursor(END)
+        dialog.bind("<Return>", lambda e: on_rename())
+        dialog.bind("<Escape>", lambda e: on_cancel())
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        self._apply_theme(dialog)
+        self._center_window(dialog, 520, 180)
+        dialog.lift()
+        dialog.focus_force()
+        dialog.attributes("-topmost", True)
+        dialog.after(250, lambda: dialog.attributes("-topmost", False) if dialog.winfo_exists() else None)
+        dialog.wait_window()
+
+        return result["action"] or "cancel", result["name"]
+
+    def _show_root_for_modal(self) -> None:
+        if self.tray_icon:
+            self.tray_icon.stop()
+            self.tray_icon = None
+        if self.root.state() == "withdrawn":
+            self.root.deiconify()
+        if self.root.state() == "iconic":
+            self.root.state("normal")
+        self.root.lift()
+        self.root.focus_force()
+
+    def _center_window(self, window: Toplevel, width: int, height: int) -> None:
+        self.root.update_idletasks()
+        window.update_idletasks()
+        parent_x = self.root.winfo_rootx()
+        parent_y = self.root.winfo_rooty()
+        parent_width = max(self.root.winfo_width(), width)
+        parent_height = max(self.root.winfo_height(), height)
+        x = parent_x + max(0, (parent_width - width) // 2)
+        y = parent_y + max(0, (parent_height - height) // 2)
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
     def _poll_results(self) -> None:
         got_result = False
         while True:
@@ -789,11 +954,18 @@ class DriveUploaderApp:
             got_result = True
             self.pending_uploads = max(0, self.pending_uploads - completed_count)
             if kind == "success" and isinstance(detail, dict):
-                self.history.append(detail)
+                self.history.insert(0, detail)
                 save_history(self.history)
-                self._add_history_card(detail)
+                self._add_history_card(detail, at_top=True)
                 link = detail.get("webViewLink", "")
                 self._copy_to_clipboard(link)
+            elif kind == "conflict":
+                file_path, folder_id, existing_id, suggested_name = detail
+                action, chosen_name = self._show_duplicate_dialog(name, suggested_name)
+                if action == "cancel":
+                    self.pending_uploads = max(0, self.pending_uploads - 1)
+                    self.status.set(f"Skipped upload of {name} (duplicate name).")
+                self.decision_queue.put((action, chosen_name))
             else:
                 self.status.set(f"{name}  ->  ERROR: {detail}")
 
@@ -1077,7 +1249,7 @@ def get_drive_service():
 
 
 def get_or_create_folder(service, folder_name: str) -> str:  # type: ignore[no-untyped-def]
-    escaped_name = folder_name.replace("\\", "\\\\").replace("'", "\\'")
+    escaped_name = _escape_for_drive_query(folder_name)
     query = (
         f"name = '{escaped_name}' and "
         "mimeType = 'application/vnd.google-apps.folder' and "
@@ -1200,9 +1372,71 @@ def trash_drive_file(service, file_id: str) -> None:  # type: ignore[no-untyped-
     service.files().update(fileId=file_id, body={"trashed": True}, fields="id, trashed").execute()
 
 
-def upload_and_share(service, file_path: Path, folder_id: str) -> dict[str, str]:  # type: ignore[no-untyped-def]
+def _escape_for_drive_query(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def find_existing_file_in_folder(service, folder_id: str, filename: str) -> str | None:  # type: ignore[no-untyped-def]
+    escaped_name = _escape_for_drive_query(filename)
+    query = f"name = '{escaped_name}' and '{folder_id}' in parents and trashed = false"
+    existing = (
+        service.files()
+        .list(q=query, spaces="drive", fields="files(id)", pageSize=1)
+        .execute()
+        .get("files", [])
+    )
+    return existing[0]["id"] if existing else None
+
+
+def get_unique_filename(service, folder_id: str, filename: str) -> str:  # type: ignore[no-untyped-def]
+    if find_existing_file_in_folder(service, folder_id, filename) is None:
+        return filename
+    if '.' in filename:
+        stem, suffix = filename.rsplit('.', 1)
+        suffix = '.' + suffix
+    else:
+        stem, suffix = filename, ''
+    match = re.search(r' \((\d+)\)$', stem)
+    if match:
+        base = stem[: match.start()]
+        start = int(match.group(1)) + 1
+    else:
+        base = stem
+        start = 1
+    for i in range(start, start + 1000):
+        candidate = f"{base} ({i}){suffix}"
+        if find_existing_file_in_folder(service, folder_id, candidate) is None:
+            return candidate
+    return f"{base} (copy){suffix}"
+
+
+def overwrite_file_content(service, file_path: Path, file_id: str) -> dict[str, str]:  # type: ignore[no-untyped-def]
     media = MediaFileUpload(str(file_path), resumable=True)
-    file_metadata = {"name": file_path.name, "parents": [folder_id]}
+    updated = (
+        service.files()
+        .update(fileId=file_id, media_body=media, fields="id, webViewLink")
+        .execute()
+    )
+    try:
+        service.permissions().create(
+            fileId=file_id,
+            body={"type": "anyone", "role": "reader", "allowFileDiscovery": False},
+            fields="id",
+        ).execute()
+    except Exception:
+        pass
+    shared_file = service.files().get(fileId=file_id, fields="webViewLink").execute()
+    return {
+        "id": file_id,
+        "name": file_path.name,
+        "webViewLink": shared_file["webViewLink"],
+    }
+
+
+def upload_and_share(service, file_path: Path, folder_id: str, filename: str | None = None) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    media = MediaFileUpload(str(file_path), resumable=True)
+    use_name = filename or file_path.name
+    file_metadata = {"name": use_name, "parents": [folder_id]}
     uploaded_file = (
         service.files()
         .create(body=file_metadata, media_body=media, fields="id, webViewLink")
@@ -1218,7 +1452,7 @@ def upload_and_share(service, file_path: Path, folder_id: str) -> dict[str, str]
     shared_file = service.files().get(fileId=uploaded_file["id"], fields="webViewLink").execute()
     return {
         "id": uploaded_file["id"],
-        "name": file_path.name,
+        "name": use_name,
         "webViewLink": shared_file["webViewLink"],
     }
 
