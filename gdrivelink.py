@@ -965,9 +965,6 @@ class DriveUploaderApp:
         return result["action"] or "cancel", result["name"]
 
     def _show_root_for_modal(self) -> None:
-        if self.tray_icon:
-            self.tray_icon.stop()
-            self.tray_icon = None
         if self.root.state() == "withdrawn":
             self.root.deiconify()
         if self.root.state() == "iconic":
@@ -1083,14 +1080,6 @@ class DriveUploaderApp:
         if got_result and self.pending_uploads == 0:
             self.progress.stop()
             self.status.set("Done. The latest uploaded link was copied to the clipboard.")
-
-        current_state = self.root.state()
-        if current_state == 'withdrawn':
-            if not self.tray_icon:
-                self._setup_tray()
-        elif current_state == 'normal' and self.tray_icon:
-            self.tray_icon.stop()
-            self.tray_icon = None
 
         self.root.after(100, self._poll_results)
 

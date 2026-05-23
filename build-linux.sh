@@ -12,6 +12,9 @@ fi
 new_version="${major}.${minor}.$((patch + 1))"
 printf '%s\n' "$new_version" > VERSION
 
+download_url="https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v${new_version}/GDriveLink.exe"
+perl -0pi -e "s|\\[GDriveLink\\.exe\\]\\(https://github\\.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v[^/]+/GDriveLink\\.exe\\)|[GDriveLink.exe]($download_url)|" README.md
+
 runtime_files=(credentials.json token.pickle upload_history.json settings.json)
 ignore_rules=(
   credentials.json

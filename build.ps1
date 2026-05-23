@@ -11,6 +11,11 @@ $parts[2] = [int]$parts[2] + 1
 $newVersion = ($parts -join '.')
 Set-Content VERSION $newVersion
 
+$downloadUrl = "https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v$newVersion/GDriveLink.exe"
+$readme = Get-Content -Raw "README.md"
+$readme = $readme -replace '\[GDriveLink\.exe\]\(https://github\.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v[^/]+/GDriveLink\.exe\)', "[GDriveLink.exe]($downloadUrl)"
+Set-Content "README.md" $readme -NoNewline
+
 $runtimeFiles = @("credentials.json", "token.pickle", "upload_history.json", "settings.json")
 $ignoreRules = @(
     "credentials.json",

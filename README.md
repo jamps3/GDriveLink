@@ -8,6 +8,10 @@ The app also keeps local upload history in `upload_history.json` and includes a 
 
 ![Screenshot](screenshot.png)
 
+## Download
+
+[GDriveLink.exe](https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v1.0.5/GDriveLink.exe)
+
 ## Setup
 
 1. Create a Google Cloud project.
@@ -74,7 +78,7 @@ Keep `credentials.json` beside the executable for first-run Google OAuth setup. 
 
 ## System Tray Icon
 
-When the app window is minimized, a system tray icon appears in the taskbar notification area. Left-click the tray icon to show the app window. You can also right-click the icon to access a menu with options to Show the app window or Quit the app.
+The app keeps a system tray icon visible in the taskbar notification area while it is running. Left-click the tray icon to show the app window. You can also right-click the icon to access a menu with options to Show the app window, paste a link, or Quit the app.
 
 ## Notes
 
