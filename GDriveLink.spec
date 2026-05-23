@@ -5,7 +5,7 @@ a = Analysis(
     ['gdrivelink.py'],
     pathex=[],
     binaries=[],
-    datas=[('gdrivelink.ico', '.')],
+    datas=[('gdrivelink.ico', '.'), ('GDriveLink-logo-128.png', '.')],
     excludes=['pycparser.lextab', 'pycparser.yacctab'],
     hookspath=[],
     hooksconfig={},

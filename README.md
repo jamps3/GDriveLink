@@ -1,5 +1,7 @@
 # GDriveLink
 
+![GDriveLink](GDriveLink-biglogo.png)
+
 GDriveLink is a small Python desktop app for quickly turning local files and clipboard images into Google Drive share links. Drop files into the app, or press `Ctrl+V` to preview and upload a copied image. Uploads go into a configurable Drive folder, are shared as `anyone with the link can read`, and the resulting link is copied to the clipboard.
 
 The app also keeps local upload history in `upload_history.json` and includes a Drive Folder tab with compact file cards for refreshing the selected Drive folder, viewing each file's current sharing status, and copying links from existing Drive files after ensuring link sharing is enabled.
@@ -40,7 +42,7 @@ You can also copy an image to the clipboard and press `Ctrl+V` in the app. The a
 
 Open this folder in VS Code. The included `.vscode/settings.json` automatically selects the virtual environment Python interpreter. Press F5 to run `gdrivelink.py` using the configured launch settings.
 
-## Build Windows EXE
+## Build
 
 Install PyInstaller into the virtual environment:
 
@@ -48,19 +50,27 @@ Install PyInstaller into the virtual environment:
 .\.venv\Scripts\python.exe -m pip install pyinstaller
 ```
 
-Build the app:
+Build the Windows app:
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean GDriveLink.spec
+.\build.ps1
 ```
 
-The executable is created at:
+Build the Linux app:
+
+```bash
+chmod +x ./build-linux.sh
+./build-linux.sh
+```
+
+Each build increments `VERSION` and creates a versioned release directory with a stable executable name:
 
 ```text
-dist\GDriveLink.exe
+dist\GDriveLink-v1.0.6\GDriveLink.exe
+dist/GDriveLink-v1.0.6/GDriveLink
 ```
 
-Keep `credentials.json` beside the executable for first-run Google OAuth setup. The build is a single-file executable, so there is no `_internal` folder to distribute. The generated `build\` folder is ignored by Git.
+Keep `credentials.json` beside the executable for first-run Google OAuth setup. The build scripts copy `README.md` and `LICENSE` into the release directory when those files exist, then move runtime files from the newest previous release directory into the new one: `credentials.json`, `token.pickle`, `upload_history.json`, and `settings.json`. If there is no previous release copy, the scripts copy those runtime files from the project root when present. The build is a single-file executable, so there is no `_internal` folder to distribute. The generated `build\` folder is ignored by Git.
 
 ## System Tray Icon
 

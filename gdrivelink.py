@@ -34,6 +34,7 @@ TOKEN_FILE = APP_DIR / "token.pickle"
 HISTORY_FILE = APP_DIR / "upload_history.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 ICON_FILE = RESOURCE_DIR / "gdrivelink.ico"
+LOGO_FILE = RESOURCE_DIR / "GDriveLink-logo-128.png"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 THEME_OPTIONS = ("system", "light", "dark")
 LIGHT_THEME = {
@@ -70,6 +71,16 @@ DARK_THEME = {
     "select_text": "#ffffff",
     "drop": "#182233",
 }
+
+APP_DESCRIPTION = (
+    "GDriveLink is a small Python desktop app for quickly turning local files and clipboard images "
+    "into Google Drive share links. Drop files into the app, or press `Ctrl+V` to preview and upload "
+    "a copied image. Uploads go into a configurable Drive folder, are shared as `anyone with the link "
+    "can read`, and the resulting link is copied to the clipboard.\n\n"
+    "The app also keeps local upload history in `upload_history.json` and includes a Drive Folder tab "
+    "with compact file cards for refreshing the selected Drive folder, viewing each file's current "
+    "sharing status, and copying links from existing Drive files after ensuring link sharing is enabled."
+)
 
 
 def load_history() -> list[dict[str, str]]:
@@ -178,13 +189,19 @@ class DriveUploaderApp:
         self.drive_files_by_id: dict[str, dict[str, str]] = {}
         self.drive_cards_by_id: dict[str, Frame] = {}
         self.tray_icon = None
+        self.header_logo = self._load_logo(56)
+        self.dialog_logo = self._load_logo(56)
+        self.choose_button = None
 
         self._configure_ttk_theme()
         self._build_ui()
         self._apply_theme()
+        if self.choose_button:
+            self.choose_button.focus_set()
         self._load_history_cards()
         self.root.bind_all("<Control-v>", self._handle_clipboard_paste)
         self.root.bind("<Unmap>", self._handle_window_unmap)
+        self.root.bind("<Return>", self._handle_main_return)
         self._setup_tray()
         self.root.after(100, self._poll_results)
         self.root.after(100, self._poll_drive_files)
@@ -198,8 +215,10 @@ class DriveUploaderApp:
         header.configure(height=52)
         header.pack_propagate(False)
 
-        title = Label(header, text=APP_TITLE, font=("Segoe UI", 18, "bold"), anchor="w")
-        title.pack(side=LEFT, fill=X, expand=True)
+        if self.header_logo:
+            Label(header, image=self.header_logo).pack(side=LEFT, padx=(0, 12))
+        else:
+            Label(header, text=APP_TITLE, font=("Segoe UI", 18, "bold"), anchor="w").pack(side=LEFT, fill=X, expand=True)
 
         self.refresh_drive_button = Button(
             header,
@@ -220,6 +239,16 @@ class DriveUploaderApp:
             pady=10,
         )
         clipboard_button.pack(side=RIGHT, padx=(0, 8))
+
+        about_button = Button(
+            header,
+            text="About",
+            command=self._show_about,
+            font=("Segoe UI", 10),
+            padx=10,
+            pady=4,
+        )
+        about_button.pack(side=RIGHT, padx=(0, 8))
 
         self.tabs = Notebook(container)
         self.tabs.pack(fill=BOTH, expand=True, pady=(12, 0))
@@ -265,14 +294,15 @@ class DriveUploaderApp:
         controls = Frame(main_tab)
         controls.pack(fill="x", pady=12)
 
-        Button(
+        self.choose_button = Button(
             controls,
             text="Choose files",
             command=self._choose_files,
             font=("Segoe UI", 12, "bold"),
             padx=22,
             pady=10,
-        ).pack(expand=True)
+        )
+        self.choose_button.pack(expand=True)
 
         self.progress = Progressbar(main_tab, mode="indeterminate")
         self.progress.pack(fill="x", pady=(0, 8))
@@ -337,10 +367,16 @@ class DriveUploaderApp:
 
         data_frame = Frame(settings_tab, padx=10, pady=12)
         data_frame.pack(fill=X)
-        Label(data_frame, text="App folder", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
+        Label(data_frame, text="Folders", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
         Button(
             data_frame,
             text="Open token folder",
+            command=self._open_app_folder,
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(8, 0))
+        Button(
+            data_frame,
+            text="Open Drive folder",
             command=self._open_app_folder,
             font=("Segoe UI", 10),
         ).pack(anchor="w", pady=(8, 0))
@@ -676,6 +712,13 @@ class DriveUploaderApp:
         except Exception as exc:
             self._run_on_ui_thread(lambda e=str(exc): self.status.set(f"Could not set sharing for '{name}': {e}"))
 
+    def _handle_main_return(self, _event=None) -> None:
+        focused = self.root.focus_get()
+        if focused and focused.winfo_toplevel() != self.root:
+            return
+        if self.tabs and self.tabs.index(self.tabs.select()) == 0 and self.choose_button:
+            self.choose_button.invoke()
+
     def _choose_files(self) -> None:
         filenames = filedialog.askopenfilenames(title="Choose files to upload")
         if filenames:
@@ -693,7 +736,7 @@ class DriveUploaderApp:
             return "break"
 
         if image is None:
-            self.status.set("Clipboard does not contain an image.")
+            self.status.set("Clipboard does not contain an image or a file.")
             return "break"
 
         if isinstance(image, list):
@@ -943,6 +986,74 @@ class DriveUploaderApp:
         y = parent_y + max(0, (parent_height - height) // 2)
         window.geometry(f"{width}x{height}+{x}+{y}")
 
+    def _load_logo(self, height: int) -> ImageTk.PhotoImage | None:
+        if not LOGO_FILE.exists():
+            return None
+        try:
+            img = Image.open(LOGO_FILE)
+            ratio = height / img.height
+            target_w = int(img.width * ratio)
+            img = img.resize((target_w, height), Image.LANCZOS)
+            return ImageTk.PhotoImage(img)
+        except Exception:
+            return None
+
+    def _show_about(self) -> None:
+        about = Toplevel(self.root)
+        about.title("About GDriveLink")
+        about.transient(self.root)
+        about.minsize(500, 420)
+
+        if self.dialog_logo:
+            Label(about, image=self.dialog_logo).pack(pady=(16, 4))
+        else:
+            Label(about, text=APP_TITLE, font=("Segoe UI", 18, "bold")).pack(pady=(16, 4))
+        version = "1.0.3"
+        try:
+            vfile = APP_DIR / "VERSION"
+            if vfile.exists():
+                version = vfile.read_text(encoding="utf-8").strip() or version
+        except Exception:
+            pass
+        Label(about, text=f"Version {version}", font=("Segoe UI", 10)).pack()
+
+        Label(
+            about,
+            text=APP_DESCRIPTION,
+            font=("Segoe UI", 10),
+            wraplength=460,
+            justify=LEFT,
+            anchor="nw",
+        ).pack(fill=X, padx=20, pady=12)
+
+        Label(about, text="© 2026 Jan-Erik Labbas. All rights reserved.", font=("Segoe UI", 9)).pack(pady=(0, 4))
+        Label(about, text="MIT License", font=("Segoe UI", 9)).pack(pady=(0, 8))
+
+        support = Frame(about)
+        support.pack()
+        Label(support, text="Support me on PayPal: ", font=("Segoe UI", 10)).pack(side=LEFT)
+        link = Label(
+            support,
+            text="paypal.me/jamps3",
+            font=("Segoe UI", 10, "underline"),
+            cursor="hand2",
+        )
+        link.pack(side=LEFT)
+        link.bind("<Button-1>", lambda _e: webbrowser.open("https://paypal.me/jamps3"))
+
+        close_button = Button(about, text="Close", command=about.destroy, font=("Segoe UI", 10), padx=20, pady=6)
+        close_button.pack(pady=16)
+
+        about.bind("<Escape>", lambda _e: about.destroy())
+        about.bind("<Return>", lambda _e: close_button.invoke())
+
+        self._apply_theme(about)
+        link.configure(foreground=self.theme["accent"])
+        self._center_window(about, 520, 440)
+        about.lift()
+        about.focus_force()
+        close_button.focus_set()
+
     def _poll_results(self) -> None:
         got_result = False
         while True:
@@ -1090,6 +1201,15 @@ class DriveUploaderApp:
             if link:
                 webbrowser.open(link)
 
+    def _open_drive_folder(self, file_id: str) -> None:
+        item = self.drive_files_by_id.get(file_id)
+        if item:
+            parents = item.get("parents") or []
+            if parents:
+                parent_id = parents[0]
+                url = f"https://drive.google.com/drive/folders/{parent_id}"
+                webbrowser.open(url)
+
     def _clear_drive_cards(self) -> None:
         self.drive_files_by_id.clear()
         self.drive_cards_by_id.clear()
@@ -1141,6 +1261,11 @@ class DriveUploaderApp:
             side=RIGHT,
             padx=(8, 0),
         )
+        Button(
+            meta_row,
+            text="Open folder",
+            command=lambda current_id=file_id: self._open_drive_folder(current_id),
+        ).pack(side=RIGHT)
         Button(
             meta_row,
             text="Copy link",
@@ -1278,7 +1403,7 @@ def list_drive_folder_files(service, folder_id: str) -> list[dict[str, str]]:  #
     request = service.files().list(
         q=query,
         spaces="drive",
-        fields="nextPageToken, files(id, name, modifiedTime, webViewLink)",
+        fields="nextPageToken, files(id, name, modifiedTime, webViewLink, parents)",
         orderBy="modifiedTime desc",
         pageSize=100,
     )

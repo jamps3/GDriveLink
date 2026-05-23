@@ -1,12 +1,12 @@
 
-dist/credentials.json
-dist/token.pickle
-dist/upload_history.json
-dist/settings.json
 credentials.json
 token.pickle
 upload_history.json
 settings.json
+**/credentials.json
+**/token.pickle
+**/upload_history.json
+**/settings.json
 .venv/
 __pycache__/
 *.py[cod]
