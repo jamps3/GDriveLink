@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import queue
 import re
@@ -12,8 +13,8 @@ import webbrowser
 from urllib.parse import urlparse
 from datetime import datetime
 from pathlib import Path
-from tkinter import BOTH, BOTTOM, END, LEFT, RIGHT, X, Y, Button, Canvas, Entry, Frame, Label, Listbox, Radiobutton, Scrollbar, StringVar, Toplevel, filedialog, messagebox
-from tkinter.ttk import Notebook, Progressbar, Style
+from tkinter import BOTH, BOTTOM, END, LEFT, RIGHT, X, Y, BooleanVar, Button, Canvas, Checkbutton, Entry, Frame, Label, Listbox, Radiobutton, Scrollbar, StringVar, Toplevel, filedialog, messagebox
+from tkinter.ttk import Checkbutton as TtkCheckbutton, Notebook, Progressbar, Radiobutton as TtkRadiobutton, Scrollbar as TtkScrollbar, Style
 
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
@@ -35,8 +36,15 @@ HISTORY_FILE = APP_DIR / "upload_history.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 ICON_FILE = RESOURCE_DIR / "gdrivelink.ico"
 LOGO_FILE = RESOURCE_DIR / "GDriveLink-logo-128.png"
+ABOUT_ICON_FILE = RESOURCE_DIR / "about.png"
+CLIPBOARD_ICON_FILE = RESOURCE_DIR / "clipboard.png"
+CHOOSE_ICON_FILE = RESOURCE_DIR / "choose.png"
+OPEN_DRIVE_ICON_FILE = RESOURCE_DIR / "open_drive.png"
+REFRESH_DRIVE_ICON_FILE = RESOURCE_DIR / "refresh_drive.png"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 THEME_OPTIONS = ("system", "light", "dark")
+DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS = True
+DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS = True
 LIGHT_THEME = {
     "window": "#f5f7fb",
     "surface": "#ffffff",
@@ -74,12 +82,13 @@ DARK_THEME = {
 
 APP_DESCRIPTION = (
     "GDriveLink is a small Python desktop app for quickly turning local files and clipboard images "
-    "into Google Drive share links. Drop files into the app, or press `Ctrl+V` to preview and upload "
-    "a copied image. Uploads go into a configurable Drive folder, are shared as `anyone with the link "
-    "can read`, and the resulting link is copied to the clipboard.\n\n"
+    "into Google Drive share links. Drop files into the app, press `Ctrl+V`, or use the clipboard upload "
+    "button to preview and upload copied images or files. Uploads go into a configurable Drive folder, "
+    "are shared as `anyone with the link can read`, and the resulting link is copied to the clipboard.\n\n"
     "The app also keeps local upload history in `upload_history.json` and includes a Drive Folder tab "
     "with compact file cards for refreshing the selected Drive folder, viewing each file's current "
-    "sharing status, and copying links from existing Drive files after ensuring link sharing is enabled."
+    "sharing status, and copying links from existing Drive files after ensuring link sharing is enabled. "
+    "The main screen can also open the selected synced Drive folder in Explorer."
 )
 
 
@@ -104,23 +113,39 @@ def save_history(history: list[dict[str, str]]) -> None:
         history_file.write("\n")
 
 
-def load_settings() -> dict[str, str]:
+def default_settings() -> dict[str, bool | str]:
+    return {
+        "theme": "system",
+        "confirm_history_drive_deletions": DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS,
+        "confirm_drive_folder_deletions": DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS,
+    }
+
+
+def load_settings() -> dict[str, bool | str]:
     if not SETTINGS_FILE.exists():
-        return {}
+        return default_settings()
     try:
         with SETTINGS_FILE.open("r", encoding="utf-8") as settings_file:
             data = json.load(settings_file)
     except (OSError, json.JSONDecodeError):
-        return {}
+        return default_settings()
     if not isinstance(data, dict):
-        return {}
+        return default_settings()
     theme = data.get("theme", "system")
     if theme not in THEME_OPTIONS:
         theme = "system"
-    return {"theme": theme}
+    return {
+        "theme": theme,
+        "confirm_history_drive_deletions": bool(
+            data.get("confirm_history_drive_deletions", DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS)
+        ),
+        "confirm_drive_folder_deletions": bool(
+            data.get("confirm_drive_folder_deletions", DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS)
+        ),
+    }
 
 
-def save_settings(settings: dict[str, str]) -> None:
+def save_settings(settings: dict[str, bool | str]) -> None:
     with SETTINGS_FILE.open("w", encoding="utf-8") as settings_file:
         json.dump(settings, settings_file, indent=2)
         settings_file.write("\n")
@@ -170,13 +195,29 @@ class DriveUploaderApp:
         self.root.title(APP_TITLE)
         if ICON_FILE.exists():
             self.root.iconbitmap(ICON_FILE)
-        self.root.geometry("760x520")
-        self.root.minsize(640, 640)
+        self.root.geometry("690x650")
+        self.root.minsize(690, 650)
 
-        self.status = StringVar(value="Drop files here, or choose files.")
+        self.status = StringVar(
+            value=(
+                "Drop files here, paste from clipboard, or choose files.\n\n"
+                "Uploaded files are:\n"
+                "- Uploaded to your selected Google Drive folder\n"
+                "- Shared so anyone with the link can view them\n"
+                "- Added to the Upload History tab"
+            )
+        )
         self.drive_folder_name = StringVar(value="GDriveLink")
         self.settings = load_settings()
-        self.theme_choice = StringVar(value=self.settings.get("theme", "system"))
+        self.theme_choice = StringVar(value=str(self.settings.get("theme", "system")))
+        self.confirm_history_drive_deletions = BooleanVar(
+            value=bool(
+                self.settings.get("confirm_history_drive_deletions", DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS)
+            )
+        )
+        self.confirm_drive_folder_deletions = BooleanVar(
+            value=bool(self.settings.get("confirm_drive_folder_deletions", DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS))
+        )
         self.theme = DARK_THEME if self._effective_theme_name() == "dark" else LIGHT_THEME
         self.style = Style(self.root)
         self.result_queue: queue.Queue[tuple[str, str, dict[str, str] | str | None, int]] = queue.Queue()
@@ -191,6 +232,11 @@ class DriveUploaderApp:
         self.tray_icon = None
         self.header_logo = self._load_logo(56)
         self.dialog_logo = self._load_logo(56)
+        self.about_icon = self._load_image(ABOUT_ICON_FILE, 32)
+        self.clipboard_icon = self._load_image_exact(CLIPBOARD_ICON_FILE)
+        self.choose_icon = self._load_image_exact(CHOOSE_ICON_FILE)
+        self.open_drive_icon = self._load_image_exact(OPEN_DRIVE_ICON_FILE)
+        self.refresh_drive_icon = self._load_image_exact(REFRESH_DRIVE_ICON_FILE)
         self.choose_button = None
 
         self._configure_ttk_theme()
@@ -200,6 +246,10 @@ class DriveUploaderApp:
             self.choose_button.focus_set()
         self._load_history_cards()
         self.root.bind_all("<Control-v>", self._handle_clipboard_paste)
+        self.root.bind_all("<MouseWheel>", self._handle_canvas_mousewheel)
+        self.root.bind_all("<Shift-MouseWheel>", self._handle_canvas_mousewheel)
+        self.root.bind_all("<Button-4>", self._handle_canvas_mousewheel)
+        self.root.bind_all("<Button-5>", self._handle_canvas_mousewheel)
         self.root.bind("<Unmap>", self._handle_window_unmap)
         self.root.bind("<Return>", self._handle_main_return)
         self._setup_tray()
@@ -207,69 +257,69 @@ class DriveUploaderApp:
         self.root.after(100, self._poll_drive_files)
 
     def _build_ui(self) -> None:
-        container = Frame(self.root, padx=18, pady=18)
+        container = self._frame(self.root, padx=18, pady=18)
         container.pack(fill=BOTH, expand=True)
 
-        header = Frame(container)
+        header = self._frame(container)
         header.pack(fill=X)
         header.configure(height=52)
         header.pack_propagate(False)
 
         if self.header_logo:
-            Label(header, image=self.header_logo).pack(side=LEFT, padx=(0, 12))
+            self._label(header, image=self.header_logo).pack(side=LEFT, padx=(0, 12))
         else:
-            Label(header, text=APP_TITLE, font=("Segoe UI", 18, "bold"), anchor="w").pack(side=LEFT, fill=X, expand=True)
+            self._label(header, text=APP_TITLE, font=("Segoe UI", 18, "bold"), anchor="w").pack(
+                side=LEFT,
+                fill=X,
+                expand=True,
+            )
 
-        self.refresh_drive_button = Button(
-            header,
-            text="Refresh folder files",
-            command=self._refresh_drive_files,
-            font=("Segoe UI", 12, "bold"),
-            padx=22,
-            pady=10,
-        )
+        refresh_button_options = {
+            "command": self._refresh_drive_files,
+            "padx": 8,
+            "pady": 8,
+        }
+        if self.refresh_drive_icon:
+            refresh_button_options["image"] = self.refresh_drive_icon
+        else:
+            refresh_button_options["text"] = "Refresh Drive"
+            refresh_button_options["font"] = ("Segoe UI", 12, "bold")
+            refresh_button_options["padx"] = 22
+            refresh_button_options["pady"] = 10
+        self.refresh_drive_button = Button(header, **refresh_button_options)
         self.refresh_drive_button.pack(side=RIGHT)
 
-        clipboard_button = Button(
-            header,
-            text="Upload from clipboard",
-            command=self._handle_clipboard_paste,
-            font=("Segoe UI", 12, "bold"),
-            padx=22,
-            pady=10,
-        )
-        clipboard_button.pack(side=RIGHT, padx=(0, 8))
-
-        about_button = Button(
-            header,
-            text="About",
-            command=self._show_about,
-            font=("Segoe UI", 10),
-            padx=10,
-            pady=4,
-        )
-        about_button.pack(side=RIGHT, padx=(0, 8))
+        about_button_options = {
+            "command": self._show_about,
+            "padx": 8,
+            "pady": 8,
+        }
+        if self.about_icon:
+            about_button_options["image"] = self.about_icon
+        else:
+            about_button_options["text"] = "About"
+            about_button_options["font"] = ("Segoe UI", 10)
+            about_button_options["padx"] = 10
+            about_button_options["pady"] = 4
+        about_button_frame_width = self.about_icon.width() if self.about_icon else 64
+        about_button_frame_height = self.about_icon.height() if self.about_icon else 32
+        about_button_frame = self._frame(header, width=about_button_frame_width, height=about_button_frame_height)
+        about_button_frame.pack(side=RIGHT, padx=(0, 8))
+        about_button_frame.pack_propagate(False)
+        about_button = Button(about_button_frame, **about_button_options)
+        about_button.pack(fill=BOTH, expand=True)
 
         self.tabs = Notebook(container)
         self.tabs.pack(fill=BOTH, expand=True, pady=(12, 0))
 
-        main_tab = Frame(self.tabs)
-        history_tab = Frame(self.tabs)
-        drive_tab = Frame(self.tabs)
-        settings_tab = Frame(self.tabs)
+        main_tab = self._frame(self.tabs)
+        history_tab = self._frame(self.tabs)
+        drive_tab = self._frame(self.tabs)
+        settings_tab = self._frame(self.tabs)
         self.tabs.add(main_tab, text="Main")
         self.tabs.add(history_tab, text="Upload History")
         self.tabs.add(drive_tab, text="Drive Folder")
         self.tabs.add(settings_tab, text="Settings")
-
-        hint = Label(
-            main_tab,
-            text="Files are uploaded to your Google Drive, shared as anyone with the link can read, and listed below.",
-            font=("Segoe UI", 10),
-            anchor="w",
-            justify=LEFT,
-        )
-        hint.pack(fill="x", pady=(12, 16))
 
         self.drop_area = Label(
             main_tab,
@@ -285,33 +335,98 @@ class DriveUploaderApp:
         self.drop_area.drop_target_register(DND_FILES)
         self.drop_area.dnd_bind("<<Drop>>", self._handle_drop)
 
-        folder_frame = Frame(main_tab)
+        folder_frame = self._frame(main_tab)
         folder_frame.pack(fill="x", pady=(12, 0))
 
-        Label(folder_frame, text="Drive folder", anchor="w", font=("Segoe UI", 10)).pack(side=LEFT)
+        self._label(folder_frame, text="Drive folder", anchor="w", font=("Segoe UI", 10)).pack(side=LEFT)
         Entry(folder_frame, textvariable=self.drive_folder_name).pack(side=LEFT, fill="x", expand=True, padx=(8, 0))
 
-        controls = Frame(main_tab)
-        controls.pack(fill="x", pady=12)
+        controls = self._frame(main_tab)
+        controls.pack(anchor="center", pady=12)
 
-        self.choose_button = Button(
-            controls,
-            text="Choose files",
-            command=self._choose_files,
-            font=("Segoe UI", 12, "bold"),
-            padx=22,
+        upload_top_row = self._frame(controls)
+        upload_top_row.pack(anchor="center")
+        upload_bottom_row = self._frame(controls)
+        upload_bottom_row.pack(anchor="center", pady=(8, 0))
+
+        clipboard_button_width = self.clipboard_icon.width() if self.clipboard_icon else 200
+        choose_button_width = self.choose_icon.width() if self.choose_icon else 200
+        open_drive_button_width = self.open_drive_icon.width() if self.open_drive_icon else 200
+        upload_button_height = 58
+
+        clipboard_button_frame = self._frame(
+            upload_top_row,
+            width=clipboard_button_width,
+            height=upload_button_height,
+        )
+        clipboard_button_frame.pack(side=LEFT)
+        clipboard_button_frame.pack_propagate(False)
+        clipboard_button = Button(
+            clipboard_button_frame,
+            command=self._handle_clipboard_paste,
+            padx=0,
             pady=10,
         )
-        self.choose_button.pack(expand=True)
+        if self.clipboard_icon:
+            clipboard_button.configure(image=self.clipboard_icon, pady=0)
+        else:
+            clipboard_button.configure(text="Upload from clipboard", font=("Segoe UI", 12, "bold"))
+        clipboard_button.pack(fill=BOTH, expand=True)
+
+        choose_button_frame = self._frame(upload_top_row, width=choose_button_width, height=upload_button_height)
+        choose_button_frame.pack(side=LEFT, padx=(8, 0))
+        choose_button_frame.pack_propagate(False)
+        self.choose_button = Button(
+            choose_button_frame,
+            command=self._choose_files,
+            padx=0,
+            pady=10,
+        )
+        if self.choose_icon:
+            self.choose_button.configure(image=self.choose_icon, pady=0)
+        else:
+            self.choose_button.configure(text="Choose files", font=("Segoe UI", 12, "bold"))
+        self.choose_button.pack(fill=BOTH, expand=True)
+
+        open_drive_button_frame = self._frame(
+            upload_bottom_row,
+            width=open_drive_button_width,
+            height=upload_button_height,
+        )
+        open_drive_button_frame.pack()
+        open_drive_button_frame.pack_propagate(False)
+        open_drive_button = Button(
+            open_drive_button_frame,
+            command=self._open_selected_drive_folder,
+            padx=0,
+            pady=10,
+        )
+        if self.open_drive_icon:
+            open_drive_button.configure(image=self.open_drive_icon, pady=0)
+        else:
+            open_drive_button.configure(text="Open Drive folder", font=("Segoe UI", 12, "bold"))
+        open_drive_button.pack(fill=BOTH, expand=True)
 
         self.progress = Progressbar(main_tab, mode="indeterminate")
         self.progress.pack(fill="x", pady=(0, 8))
 
-        Label(main_tab, textvariable=self.status, anchor="w", font=("Segoe UI", 10)).pack(fill="x", pady=(0, 8))
+        self._label(
+            main_tab,
+            textvariable=self.status,
+            anchor="nw",
+            justify=LEFT,
+            font=("Segoe UI", 10),
+            padx=2,
+        ).pack(fill="x", pady=(0, 8))
 
-        self.history_cards_canvas = Canvas(history_tab, highlightthickness=0)
-        self.history_cards_scrollbar = Scrollbar(history_tab, orient="vertical", command=self.history_cards_canvas.yview)
-        self.history_cards_frame = Frame(self.history_cards_canvas)
+        self.history_cards_canvas = Canvas(history_tab, highlightthickness=0, background=self.theme["window"])
+        self.history_cards_scrollbar = TtkScrollbar(
+            history_tab,
+            orient="vertical",
+            command=self.history_cards_canvas.yview,
+            style="Vertical.TScrollbar",
+        )
+        self.history_cards_frame = self._frame(self.history_cards_canvas)
         self.history_cards_frame.bind(
             "<Configure>",
             lambda _event: self.history_cards_canvas.configure(scrollregion=self.history_cards_canvas.bbox("all")),
@@ -329,9 +444,14 @@ class DriveUploaderApp:
         self.history_cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
         self.history_cards_scrollbar.pack(side=RIGHT, fill=Y)
 
-        self.drive_cards_canvas = Canvas(drive_tab, highlightthickness=0)
-        self.drive_cards_scrollbar = Scrollbar(drive_tab, orient="vertical", command=self.drive_cards_canvas.yview)
-        self.drive_cards_frame = Frame(self.drive_cards_canvas)
+        self.drive_cards_canvas = Canvas(drive_tab, highlightthickness=0, background=self.theme["window"])
+        self.drive_cards_scrollbar = TtkScrollbar(
+            drive_tab,
+            orient="vertical",
+            command=self.drive_cards_canvas.yview,
+            style="Vertical.TScrollbar",
+        )
+        self.drive_cards_frame = self._frame(self.drive_cards_canvas)
         self.drive_cards_frame.bind(
             "<Configure>",
             lambda _event: self.drive_cards_canvas.configure(scrollregion=self.drive_cards_canvas.bbox("all")),
@@ -351,11 +471,11 @@ class DriveUploaderApp:
         self._build_settings_tab(settings_tab)
 
     def _build_settings_tab(self, settings_tab: Frame) -> None:
-        theme_frame = Frame(settings_tab, padx=10, pady=12)
+        theme_frame = self._frame(settings_tab, padx=10, pady=12)
         theme_frame.pack(fill=X)
-        Label(theme_frame, text="Theme", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
+        self._label(theme_frame, text="Theme", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
         for value, label in (("system", "System default"), ("light", "Light"), ("dark", "Dark")):
-            Radiobutton(
+            self._radiobutton(
                 theme_frame,
                 text=label,
                 value=value,
@@ -365,21 +485,113 @@ class DriveUploaderApp:
                 anchor="w",
             ).pack(fill=X, pady=(8, 0))
 
-        data_frame = Frame(settings_tab, padx=10, pady=12)
+        data_frame = self._frame(settings_tab, padx=10, pady=12)
         data_frame.pack(fill=X)
-        Label(data_frame, text="Folders", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
-        Button(
+        self._label(data_frame, text="Folders", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
+        self._button(
             data_frame,
             text="Open token folder",
             command=self._open_app_folder,
             font=("Segoe UI", 10),
         ).pack(anchor="w", pady=(8, 0))
-        Button(
-            data_frame,
-            text="Open Drive folder",
-            command=self._open_app_folder,
+
+        deletion_frame = self._frame(settings_tab, padx=10, pady=12)
+        deletion_frame.pack(fill=X)
+        self._label(deletion_frame, text="Delete confirmations", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
+        self._checkbutton(
+            deletion_frame,
+            text="Confirm file deletions in Upload History?",
+            variable=self.confirm_history_drive_deletions,
+            command=self._handle_delete_settings_changed,
             font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(8, 0))
+            anchor="w",
+        ).pack(fill=X, pady=(8, 0))
+        self._checkbutton(
+            deletion_frame,
+            text="Confirm file deletions in Drive Folder?",
+            variable=self.confirm_drive_folder_deletions,
+            command=self._handle_delete_settings_changed,
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(fill=X, pady=(8, 0))
+
+    def _handle_canvas_mousewheel(self, event) -> None:  # type: ignore[no-untyped-def]
+        canvas = self._selected_scroll_canvas()
+        if canvas is None or not self._pointer_is_inside_widget(canvas):
+            return
+
+        bbox = canvas.bbox("all")
+        if bbox is None:
+            return
+        content_height = bbox[3] - bbox[1]
+        viewport_height = canvas.winfo_height()
+        scrollable_height = max(0, content_height - viewport_height)
+        if scrollable_height == 0:
+            return
+
+        if getattr(event, "num", None) == 4:
+            pixels = -48
+        elif getattr(event, "num", None) == 5:
+            pixels = 48
+        else:
+            pixels = -(event.delta / 120) * 48
+
+        top, _bottom = canvas.yview()
+        next_top = top + (pixels / scrollable_height)
+        next_top = max(0.0, min(1.0, next_top))
+        canvas.yview_moveto(next_top)
+        return "break"
+
+    def _selected_scroll_canvas(self) -> Canvas | None:
+        if not getattr(self, "tabs", None):
+            return None
+        selected_tab = self.tabs.tab(self.tabs.select(), "text")
+        if selected_tab == "Upload History":
+            return self.history_cards_canvas
+        if selected_tab == "Drive Folder":
+            return self.drive_cards_canvas
+        return None
+
+    def _pointer_is_inside_widget(self, widget) -> bool:  # type: ignore[no-untyped-def]
+        pointer_x = widget.winfo_pointerx()
+        pointer_y = widget.winfo_pointery()
+        widget_x = widget.winfo_rootx()
+        widget_y = widget.winfo_rooty()
+        return (
+            widget_x <= pointer_x < widget_x + widget.winfo_width()
+            and widget_y <= pointer_y < widget_y + widget.winfo_height()
+        )
+
+    def _frame(self, parent, **options):  # type: ignore[no-untyped-def]
+        options.setdefault("background", self.theme["window"])
+        return Frame(parent, **options)
+
+    def _label(self, parent, **options):  # type: ignore[no-untyped-def]
+        options.setdefault("background", self.theme["window"])
+        options.setdefault("foreground", self.theme["text"])
+        return Label(parent, **options)
+
+    def _button(self, parent, **options):  # type: ignore[no-untyped-def]
+        options.setdefault("background", self.theme["button"])
+        options.setdefault("foreground", self.theme["text"])
+        options.setdefault("activebackground", self.theme["button_active"])
+        options.setdefault("activeforeground", self.theme["text"])
+        options.setdefault("highlightbackground", self.theme["window"])
+        options.setdefault("highlightcolor", self.theme["accent"])
+        options.setdefault("relief", "raised")
+        return Button(parent, **options)
+
+    def _radiobutton(self, parent, **options):  # type: ignore[no-untyped-def]
+        options.pop("font", None)
+        options.pop("anchor", None)
+        options.setdefault("style", "Settings.TRadiobutton")
+        return TtkRadiobutton(parent, **options)
+
+    def _checkbutton(self, parent, **options):  # type: ignore[no-untyped-def]
+        options.pop("font", None)
+        options.pop("anchor", None)
+        options.setdefault("style", "Settings.TCheckbutton")
+        return TtkCheckbutton(parent, **options)
 
     def _setup_tray(self) -> None:
         if self.tray_icon:
@@ -412,6 +624,11 @@ class DriveUploaderApp:
         self._configure_ttk_theme()
         self._apply_theme()
 
+    def _handle_delete_settings_changed(self) -> None:
+        self.settings["confirm_history_drive_deletions"] = self.confirm_history_drive_deletions.get()
+        self.settings["confirm_drive_folder_deletions"] = self.confirm_drive_folder_deletions.get()
+        save_settings(self.settings)
+
     def _configure_ttk_theme(self) -> None:
         try:
             self.style.theme_use("clam")
@@ -441,12 +658,52 @@ class DriveUploaderApp:
             foreground=[("selected", colors["text"]), ("active", colors["text"])],
         )
         self.style.configure(
+            "Settings.TRadiobutton",
+            background=colors["window"],
+            foreground=colors["text"],
+            focuscolor=colors["window"],
+            font=("Segoe UI", 10),
+        )
+        self.style.map(
+            "Settings.TRadiobutton",
+            background=[("active", colors["window"]), ("selected", colors["window"])],
+            foreground=[("active", colors["text"]), ("selected", colors["text"])],
+        )
+        self.style.configure(
+            "Settings.TCheckbutton",
+            background=colors["window"],
+            foreground=colors["text"],
+            focuscolor=colors["window"],
+            font=("Segoe UI", 10),
+        )
+        self.style.map(
+            "Settings.TCheckbutton",
+            background=[("active", colors["window"]), ("selected", colors["window"])],
+            foreground=[("active", colors["text"]), ("selected", colors["text"])],
+        )
+        self.style.configure(
             "Horizontal.TProgressbar",
             background=colors["accent"],
             troughcolor=colors["surface_alt"],
             bordercolor=colors["border"],
             lightcolor=colors["accent"],
             darkcolor=colors["accent"],
+        )
+        self.style.configure(
+            "Vertical.TScrollbar",
+            background=colors["button"],
+            troughcolor=colors["window"],
+            bordercolor=colors["window"],
+            arrowcolor=colors["text"],
+            lightcolor=colors["button"],
+            darkcolor=colors["button"],
+            relief="flat",
+            width=14,
+        )
+        self.style.map(
+            "Vertical.TScrollbar",
+            background=[("active", colors["button_active"]), ("pressed", colors["button_active"])],
+            arrowcolor=[("active", colors["text"]), ("pressed", colors["text"])],
         )
 
     def _apply_theme(self, root_widget=None) -> None:  # type: ignore[no-untyped-def]
@@ -507,12 +764,27 @@ class DriveUploaderApp:
                     selectcolor=colors["surface_alt"],
                     highlightbackground=colors["window"],
                 )
+            elif isinstance(widget, Checkbutton):
+                widget.configure(
+                    background=colors["window"],
+                    foreground=colors["text"],
+                    activebackground=colors["window"],
+                    activeforeground=colors["text"],
+                    selectcolor=colors["surface_alt"],
+                    highlightbackground=colors["window"],
+                )
             elif isinstance(widget, Scrollbar):
                 widget.configure(
                     background=colors["button"],
                     activebackground=colors["button_active"],
                     troughcolor=colors["surface_alt"],
+                    borderwidth=0,
+                    elementborderwidth=1,
                     highlightbackground=colors["window"],
+                    highlightcolor=colors["window"],
+                    highlightthickness=0,
+                    relief="flat",
+                    width=14,
                 )
         except Exception:
             pass
@@ -643,6 +915,7 @@ class DriveUploaderApp:
             side=LEFT, fill=X, expand=True
         )
 
+        delete_from_drive = BooleanVar(value=False)
         Button(
             meta_row,
             text="Open",
@@ -661,7 +934,17 @@ class DriveUploaderApp:
         Button(
             meta_row,
             text="Remove",
-            command=lambda current_item=item, current_card=card: self._remove_history_item(current_item, current_card),
+            command=lambda current_item=item, current_card=card, current_delete=delete_from_drive: self._remove_history_item(
+                current_item,
+                current_card,
+                current_delete.get(),
+            ),
+        ).pack(side=RIGHT, padx=(0, 8))
+        Checkbutton(
+            meta_row,
+            text="Delete from Drive?",
+            variable=delete_from_drive,
+            font=("Segoe UI", 9),
         ).pack(side=RIGHT, padx=(0, 8))
         self._apply_theme(card)
 
@@ -676,7 +959,30 @@ class DriveUploaderApp:
             self._copy_to_clipboard(link)
             self.status.set("Link copied to the clipboard.")
 
-    def _remove_history_item(self, item: dict[str, str], card: Frame) -> None:
+    def _remove_history_item(self, item: dict[str, str], card: Frame, delete_from_drive: bool = False) -> None:
+        if delete_from_drive:
+            name = item.get("name", "this file")
+            if not item.get("id"):
+                self.status.set(f"Could not delete '{name}' from Drive because this history entry has no file ID.")
+                return
+            if self.confirm_history_drive_deletions.get():
+                confirmed = messagebox.askyesno(
+                    APP_TITLE,
+                    f"Remove '{name}' from Upload History and delete it from Google Drive?",
+                )
+                if not confirmed:
+                    return
+            self.status.set(f"Deleting '{name}' from Drive...")
+            worker = threading.Thread(
+                target=self._remove_history_item_from_drive_worker,
+                args=(item, card),
+                daemon=True,
+            )
+            worker.start()
+            return
+        self._remove_history_item_from_view(item, card)
+
+    def _remove_history_item_from_view(self, item: dict[str, str], card: Frame) -> None:
         try:
             self.history.remove(item)
         except ValueError:
@@ -689,6 +995,18 @@ class DriveUploaderApp:
         card.destroy()
         if not self.history:
             self._show_history_message("No past uploads yet. Files you upload will be listed here as cards.")
+
+    def _remove_history_item_from_drive_worker(self, item: dict[str, str], card: Frame) -> None:
+        name = item.get("name", "file")
+        try:
+            service = get_drive_service()
+            trash_drive_file(service, item["id"])
+            def notify_success():
+                self._remove_history_item_from_view(item, card)
+                self.status.set(f"Deleted '{name}' from Drive and removed it from Upload History.")
+            self._run_on_ui_thread(notify_success)
+        except Exception as exc:
+            self._run_on_ui_thread(lambda e=str(exc): self.status.set(f"Could not delete '{name}' from Drive: {e}"))
 
     def _set_history_sharing(self, item: dict[str, str]) -> None:
         name = item.get("name", "file")
@@ -984,14 +1302,25 @@ class DriveUploaderApp:
         window.geometry(f"{width}x{height}+{x}+{y}")
 
     def _load_logo(self, height: int) -> ImageTk.PhotoImage | None:
-        if not LOGO_FILE.exists():
+        return self._load_image(LOGO_FILE, height)
+
+    def _load_image(self, image_file: Path, height: int) -> ImageTk.PhotoImage | None:
+        if not image_file.exists():
             return None
         try:
-            img = Image.open(LOGO_FILE)
+            img = Image.open(image_file)
             ratio = height / img.height
             target_w = int(img.width * ratio)
             img = img.resize((target_w, height), Image.LANCZOS)
             return ImageTk.PhotoImage(img)
+        except Exception:
+            return None
+
+    def _load_image_exact(self, image_file: Path) -> ImageTk.PhotoImage | None:
+        if not image_file.exists():
+            return None
+        try:
+            return ImageTk.PhotoImage(Image.open(image_file))
         except Exception:
             return None
 
@@ -1176,9 +1505,10 @@ class DriveUploaderApp:
         if not item:
             return
         name = item.get("name", "this file")
-        confirmed = messagebox.askyesno(APP_TITLE, f"Delete '{name}' from the Drive folder?")
-        if not confirmed:
-            return
+        if self.confirm_drive_folder_deletions.get():
+            confirmed = messagebox.askyesno(APP_TITLE, f"Delete '{name}' from the Drive folder?")
+            if not confirmed:
+                return
         self.status.set(f"Deleting '{name}' from Drive...")
         worker = threading.Thread(target=self._delete_drive_file_worker, args=(item,), daemon=True)
         worker.start()
@@ -1189,15 +1519,6 @@ class DriveUploaderApp:
             link = item.get("webViewLink")
             if link:
                 webbrowser.open(link)
-
-    def _open_drive_folder(self, file_id: str) -> None:
-        item = self.drive_files_by_id.get(file_id)
-        if item:
-            parents = item.get("parents") or []
-            if parents:
-                parent_id = parents[0]
-                url = f"https://drive.google.com/drive/folders/{parent_id}"
-                webbrowser.open(url)
 
     def _clear_drive_cards(self) -> None:
         self.drive_files_by_id.clear()
@@ -1250,11 +1571,6 @@ class DriveUploaderApp:
             side=RIGHT,
             padx=(8, 0),
         )
-        Button(
-            meta_row,
-            text="Open folder",
-            command=lambda current_id=file_id: self._open_drive_folder(current_id),
-        ).pack(side=RIGHT)
         Button(
             meta_row,
             text="Copy link",
@@ -1318,6 +1634,23 @@ class DriveUploaderApp:
     def _open_app_folder(self) -> None:
         webbrowser.open(APP_DIR.as_uri())
 
+    def _open_selected_drive_folder(self) -> None:
+        folder_name = self.drive_folder_name.get().strip() or "GDriveLink"
+        folder_path = find_local_google_drive_folder(folder_name)
+        if folder_path is None:
+            self.status.set(f"Could not find a synced Google Drive folder named '{folder_name}' in Explorer.")
+            messagebox.showerror(
+                APP_TITLE,
+                "Could not find that folder in your local Google Drive sync location.\n\n"
+                f"Folder: {folder_name}",
+            )
+            return
+        if hasattr(os, "startfile"):
+            os.startfile(folder_path)  # type: ignore[attr-defined]
+        else:
+            webbrowser.open(folder_path.as_uri())
+        self.status.set(f"Opened Drive folder in Explorer: {folder_path}")
+
     def run(self) -> None:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.mainloop()
@@ -1360,6 +1693,48 @@ def get_drive_service():
         pickle.dump(credentials, token)
 
     return build("drive", "v3", credentials=credentials)
+
+
+def find_local_google_drive_folder(folder_name: str) -> Path | None:
+    requested_path = Path(folder_name).expanduser()
+    if requested_path.is_absolute() and requested_path.exists():
+        return requested_path
+
+    candidates = [
+        Path.home() / "Google Drive",
+        Path.home() / "Google Drive" / "My Drive",
+        Path.home() / "Google Drive" / "Oma Drive",
+        Path.home() / "My Drive",
+        Path.home() / "Oma Drive",
+    ]
+    if sys.platform == "win32":
+        candidates.extend(Path(f"{letter}:") / "My Drive" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        candidates.extend(Path(f"{letter}:") / "Oma Drive" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        candidates.extend(Path(f"{letter}:") / "Shared drives" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+    relative_folder = Path(folder_name)
+    for root in candidates:
+        candidate = root / relative_folder
+        if candidate.exists():
+            return candidate
+
+    if sys.platform == "win32":
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            drive_root = Path(f"{letter}:\\")
+            if not drive_root.exists():
+                continue
+            direct_candidate = drive_root / relative_folder
+            if direct_candidate.exists():
+                return direct_candidate
+            try:
+                children = [child for child in drive_root.iterdir() if child.is_dir()]
+            except OSError:
+                continue
+            for child in children:
+                candidate = child / relative_folder
+                if candidate.exists():
+                    return candidate
+    return None
 
 
 def get_or_create_folder(service, folder_name: str) -> str:  # type: ignore[no-untyped-def]
