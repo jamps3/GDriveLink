@@ -37,6 +37,8 @@ TOKEN_FILE = APP_DIR / "token.pickle"
 HISTORY_FILE = APP_DIR / "upload_history.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 STARTUP_APP_ID = "GDriveLink"
+SINGLE_INSTANCE_MUTEX_NAME = "Global\\GDriveLinkSingleInstance"
+SINGLE_INSTANCE_LOCK_FILE = "gdrivelink.lock"
 ICON_FILE = RESOURCE_DIR / "gdrivelink.ico"
 LOGO_FILE = RESOURCE_DIR / "GDriveLink-logo-128.png"
 ABOUT_ICON_FILE = RESOURCE_DIR / "about.png"
@@ -83,6 +85,7 @@ DARK_THEME = {
     "select_text": "#ffffff",
     "drop": "#182233",
 }
+SINGLE_INSTANCE_LOCK = None
 
 APP_DESCRIPTION = (
     "GDriveLink is a small Python desktop app for quickly turning local files and clipboard images "
@@ -275,6 +278,37 @@ def set_open_with_os_enabled(enabled: bool) -> None:
         )
     else:
         autostart_file.unlink(missing_ok=True)
+
+
+def acquire_single_instance_lock():  # type: ignore[no-untyped-def]
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.CreateMutexW(None, True, SINGLE_INSTANCE_MUTEX_NAME)
+        if not handle:
+            return None
+        if ctypes.get_last_error() == 183:
+            kernel32.CloseHandle(handle)
+            return None
+        return handle
+
+    import fcntl
+
+    lock_dir = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
+    lock_file = lock_dir / SINGLE_INSTANCE_LOCK_FILE
+    handle = lock_file.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
 
 
 def system_prefers_dark_theme() -> bool:
@@ -2098,6 +2132,11 @@ def upload_and_share(service, file_path: Path, folder_id: str, filename: str | N
 
 
 def main() -> None:
+    global SINGLE_INSTANCE_LOCK
+
+    SINGLE_INSTANCE_LOCK = acquire_single_instance_lock()
+    if SINGLE_INSTANCE_LOCK is None:
+        return
     DriveUploaderApp().run()
 
 

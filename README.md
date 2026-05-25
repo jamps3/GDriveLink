@@ -10,7 +10,7 @@ The app also keeps local upload history in `upload_history.json` and includes a 
 
 ## Download
 
-[GDriveLink.exe](https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v1.0.7/GDriveLink.exe)
+[GDriveLink.exe](https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v1.0.8/GDriveLink.exe)
 
 ## Setup
 
