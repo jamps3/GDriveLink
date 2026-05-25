@@ -10,7 +10,7 @@ The app also keeps local upload history in `upload_history.json` and includes a 
 
 ## Download
 
-[GDriveLink.exe](https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v1.0.5/GDriveLink.exe)
+[GDriveLink.exe](https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v1.0.7/GDriveLink.exe)
 
 ## Setup
 
@@ -79,6 +79,8 @@ Keep `credentials.json` beside the executable for first-run Google OAuth setup. 
 ## System Tray Icon
 
 The app keeps a system tray icon visible in the taskbar notification area while it is running. Left-click the tray icon to show the app window. You can also right-click the icon to access a menu with options to Show the app window, paste a link, or Quit the app.
+
+Use Settings -> Startup -> Open with OS to launch GDriveLink automatically when you sign in.
 
 ## Notes
 

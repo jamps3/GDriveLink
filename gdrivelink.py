@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from html import escape
 import json
 import os
 import pickle
 import queue
 import re
+import shlex
 import sys
 import tempfile
 import threading
@@ -34,6 +36,7 @@ CLIENT_SECRET_FILE = APP_DIR / "credentials.json"
 TOKEN_FILE = APP_DIR / "token.pickle"
 HISTORY_FILE = APP_DIR / "upload_history.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
+STARTUP_APP_ID = "GDriveLink"
 ICON_FILE = RESOURCE_DIR / "gdrivelink.ico"
 LOGO_FILE = RESOURCE_DIR / "GDriveLink-logo-128.png"
 ABOUT_ICON_FILE = RESOURCE_DIR / "about.png"
@@ -45,6 +48,7 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 THEME_OPTIONS = ("system", "light", "dark")
 DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS = True
 DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS = True
+DEFAULT_OPEN_WITH_OS = False
 LIGHT_THEME = {
     "window": "#f5f7fb",
     "surface": "#ffffff",
@@ -118,6 +122,7 @@ def default_settings() -> dict[str, bool | str]:
         "theme": "system",
         "confirm_history_drive_deletions": DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS,
         "confirm_drive_folder_deletions": DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS,
+        "open_with_os": DEFAULT_OPEN_WITH_OS,
     }
 
 
@@ -142,6 +147,7 @@ def load_settings() -> dict[str, bool | str]:
         "confirm_drive_folder_deletions": bool(
             data.get("confirm_drive_folder_deletions", DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS)
         ),
+        "open_with_os": bool(data.get("open_with_os", DEFAULT_OPEN_WITH_OS)),
     }
 
 
@@ -149,6 +155,126 @@ def save_settings(settings: dict[str, bool | str]) -> None:
     with SETTINGS_FILE.open("w", encoding="utf-8") as settings_file:
         json.dump(settings, settings_file, indent=2)
         settings_file.write("\n")
+
+
+def startup_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [str(Path(sys.executable).resolve())]
+    script_path = Path(__file__).resolve()
+    executable = Path(sys.executable).resolve()
+    if executable.name.lower() == "python.exe":
+        pythonw = executable.with_name("pythonw.exe")
+        if pythonw.exists():
+            executable = pythonw
+    return [str(executable), str(script_path)]
+
+
+def startup_command_string() -> str:
+    if sys.platform == "win32":
+        import subprocess
+
+        return subprocess.list2cmdline(startup_command())
+    return " ".join(shlex.quote(part) for part in startup_command())
+
+
+def windows_startup_key_path() -> str:
+    return r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def linux_autostart_file() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "autostart" / "gdrivelink.desktop"
+
+
+def macos_launch_agent_file() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / "com.gdrivelink.plist"
+
+
+def is_open_with_os_enabled() -> bool:
+    try:
+        if sys.platform == "win32":
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, windows_startup_key_path()) as key:
+                value, _value_type = winreg.QueryValueEx(key, STARTUP_APP_ID)
+                return value == startup_command_string()
+        if sys.platform == "darwin":
+            return macos_launch_agent_file().exists()
+        return linux_autostart_file().exists()
+    except OSError:
+        return False
+
+
+def set_open_with_os_enabled(enabled: bool) -> None:
+    if sys.platform == "win32":
+        import winreg
+
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            windows_startup_key_path(),
+            0,
+            winreg.KEY_SET_VALUE,
+        ) as key:
+            if enabled:
+                winreg.SetValueEx(key, STARTUP_APP_ID, 0, winreg.REG_SZ, startup_command_string())
+            else:
+                try:
+                    winreg.DeleteValue(key, STARTUP_APP_ID)
+                except FileNotFoundError:
+                    pass
+        return
+
+    if sys.platform == "darwin":
+        launch_agent = macos_launch_agent_file()
+        if enabled:
+            command = startup_command()
+            program_arguments = "\n".join(f"    <string>{escape(part)}</string>" for part in command)
+            launch_agent.parent.mkdir(parents=True, exist_ok=True)
+            launch_agent.write_text(
+                "\n".join(
+                    [
+                        '<?xml version="1.0" encoding="UTF-8"?>',
+                        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+                        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+                        '<plist version="1.0">',
+                        "<dict>",
+                        "  <key>Label</key>",
+                        "  <string>com.gdrivelink</string>",
+                        "  <key>ProgramArguments</key>",
+                        "  <array>",
+                        program_arguments,
+                        "  </array>",
+                        "  <key>RunAtLoad</key>",
+                        "  <true/>",
+                        "</dict>",
+                        "</plist>",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        else:
+            launch_agent.unlink(missing_ok=True)
+        return
+
+    autostart_file = linux_autostart_file()
+    if enabled:
+        autostart_file.parent.mkdir(parents=True, exist_ok=True)
+        autostart_file.write_text(
+            "\n".join(
+                [
+                    "[Desktop Entry]",
+                    "Type=Application",
+                    f"Name={APP_TITLE}",
+                    f"Exec={startup_command_string()}",
+                    "Terminal=false",
+                    "X-GNOME-Autostart-enabled=true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    else:
+        autostart_file.unlink(missing_ok=True)
 
 
 def system_prefers_dark_theme() -> bool:
@@ -218,6 +344,8 @@ class DriveUploaderApp:
         self.confirm_drive_folder_deletions = BooleanVar(
             value=bool(self.settings.get("confirm_drive_folder_deletions", DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS))
         )
+        self.open_with_os = BooleanVar(value=is_open_with_os_enabled())
+        self.settings["open_with_os"] = self.open_with_os.get()
         self.theme = DARK_THEME if self._effective_theme_name() == "dark" else LIGHT_THEME
         self.style = Style(self.root)
         self.result_queue: queue.Queue[tuple[str, str, dict[str, str] | str | None, int]] = queue.Queue()
@@ -495,6 +623,18 @@ class DriveUploaderApp:
             font=("Segoe UI", 10),
         ).pack(anchor="w", pady=(8, 0))
 
+        startup_frame = self._frame(settings_tab, padx=10, pady=12)
+        startup_frame.pack(fill=X)
+        self._label(startup_frame, text="Startup", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
+        self._checkbutton(
+            startup_frame,
+            text="Open with OS",
+            variable=self.open_with_os,
+            command=self._handle_open_with_os_changed,
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(fill=X, pady=(8, 0))
+
         deletion_frame = self._frame(settings_tab, padx=10, pady=12)
         deletion_frame.pack(fill=X)
         self._label(deletion_frame, text="Delete confirmations", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
@@ -627,6 +767,17 @@ class DriveUploaderApp:
     def _handle_delete_settings_changed(self) -> None:
         self.settings["confirm_history_drive_deletions"] = self.confirm_history_drive_deletions.get()
         self.settings["confirm_drive_folder_deletions"] = self.confirm_drive_folder_deletions.get()
+        save_settings(self.settings)
+
+    def _handle_open_with_os_changed(self) -> None:
+        enabled = self.open_with_os.get()
+        try:
+            set_open_with_os_enabled(enabled)
+        except OSError as error:
+            self.open_with_os.set(not enabled)
+            messagebox.showerror(APP_TITLE, f"Could not update OS startup setting:\n\n{error}")
+            return
+        self.settings["open_with_os"] = enabled
         save_settings(self.settings)
 
     def _configure_ttk_theme(self) -> None:
