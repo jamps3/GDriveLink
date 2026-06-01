@@ -1,80 +1,85 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="$(tr -d '[:space:]' < VERSION)"
-IFS='.' read -r major minor patch extra <<< "$version"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+cd "$root"
 
-if [[ -n "${extra:-}" || -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
+version="$(tr -d '[:space:]' < VERSION)"
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "VERSION must use major.minor.patch format, found '$version'." >&2
   exit 1
 fi
 
-new_version="${major}.${minor}.$((patch + 1))"
+while true; do
+  read -rp "VERSION [$version]: " input_version
+  if [[ -z "$input_version" ]]; then
+    new_version="$version"
+    break
+  fi
+  if [[ "$input_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    new_version="$input_version"
+    break
+  fi
+  echo "Invalid version format. Use major.minor.patch."
+done
+
 printf '%s\n' "$new_version" > VERSION
+
+# Update APP_VERSION in gdrivelink.py
+sed -i "s/APP_VERSION = \"[^\"]*\"/APP_VERSION = \"$new_version\"/" gdrivelink.py
 
 download_url="https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v${new_version}/GDriveLink.exe"
 perl -0pi -e "s|\\[GDriveLink\\.exe\\]\\(https://github\\.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v[^/]+/GDriveLink\\.exe\\)|[GDriveLink.exe]($download_url)|" README.md
 
-runtime_files=(credentials.json token.pickle upload_history.json settings.json)
-ignore_rules=(
-  credentials.json
-  token.pickle
-  upload_history.json
-  settings.json
-  '**/credentials.json'
-  '**/token.pickle'
-  '**/upload_history.json'
-  '**/settings.json'
-)
+AppName="GDriveLink"
+Platform="linux-x64"
+BuildName="${AppName}-v${new_version}-${Platform}"
+PackageDir="$root/dist/$BuildName"
+ReleaseDir="$root/release/v${new_version}"
 
-touch .gitignore
-for rule in "${ignore_rules[@]}"; do
-  if ! grep -Fxq "$rule" .gitignore; then
-    printf '%s\n' "$rule" >> .gitignore
-  fi
-done
+rm -rf "$root/build"
+rm -rf "$PackageDir"
+mkdir -p "$PackageDir"
+mkdir -p "$ReleaseDir"
 
-previous_release_dir=""
-if [[ -d dist ]]; then
-  previous_release_dir="$(
-    find dist -maxdepth 1 -type d -name 'GDriveLink-v*' ! -name "GDriveLink-v${new_version}" -printf '%T@ %p\n' 2>/dev/null |
-      sort -nr |
-      awk 'NR == 1 { sub(/^[^ ]+ /, ""); print }'
-  )"
-fi
-
-if [[ ! -x ".venv/bin/python" ]]; then
-  echo "Expected virtual environment at .venv/bin/python." >&2
+python_exec=""
+if [[ -x ".venv-linux/bin/python" ]]; then
+  python_exec=".venv-linux/bin/python"
+elif [[ -x ".venv/bin/python" ]]; then
+  python_exec=".venv/bin/python"
+else
+  echo "Expected a Linux virtual environment at .venv-linux/bin/python or .venv/bin/python." >&2
+  echo "Create one with: python3 -m venv .venv-linux" >&2
   exit 1
 fi
 
-".venv/bin/python" -m PyInstaller --noconfirm --clean GDriveLink.spec
-
-release_dir="dist/GDriveLink-v${new_version}"
-rm -rf "$release_dir"
-mkdir -p "$release_dir"
+"$python_exec" -m PyInstaller --noconfirm --clean GDriveLink.spec
 
 if [[ -f "dist/GDriveLink" ]]; then
-  mv "dist/GDriveLink" "$release_dir/GDriveLink"
+  mv "dist/GDriveLink" "$PackageDir/GDriveLink"
 elif [[ -f "dist/GDriveLink.exe" ]]; then
-  mv "dist/GDriveLink.exe" "$release_dir/GDriveLink.exe"
+  mv "dist/GDriveLink.exe" "$PackageDir/GDriveLink.exe"
 else
   echo "Could not find PyInstaller output in dist/." >&2
   exit 1
 fi
 
-for file in README.md LICENSE; do
+for file in README.md LICENSE CHANGELOG.md; do
   if [[ -f "$file" ]]; then
-    cp "$file" "$release_dir/"
+    cp -f "$file" "$PackageDir/"
   fi
 done
 
-for file in "${runtime_files[@]}"; do
-  if [[ -n "$previous_release_dir" && -f "$previous_release_dir/$file" ]]; then
-    mv -f "$previous_release_dir/$file" "$release_dir/"
-  elif [[ -f "$file" ]]; then
-    cp -f "$file" "$release_dir/"
-  fi
-done
+ArchivePath="$ReleaseDir/$BuildName.tar.gz"
+rm -f "$ArchivePath"
+tar -C "$root/dist" -czf "$ArchivePath" "$BuildName"
 
-echo "Built ${release_dir}/"
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "$ArchivePath" > "$ReleaseDir/sha256sums-linux.txt"
+elif command -v shasum >/dev/null 2>&1; then
+  shasum -a 256 "$ArchivePath" > "$ReleaseDir/sha256sums-linux.txt"
+else
+  echo "Warning: no sha256sum or shasum command found; skipping checksum generation." >&2
+fi
+
+echo "Created: $ArchivePath"

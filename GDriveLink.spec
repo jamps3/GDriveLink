@@ -6,13 +6,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('gdrivelink.ico', '.'),
-        ('GDriveLink-logo-128.png', '.'),
-        ('about.png', '.'),
-        ('clipboard.png', '.'),
-        ('choose.png', '.'),
-        ('open_drive.png', '.'),
-        ('refresh_drive.png', '.'),
+        ('assets', 'assets'),
     ],
     excludes=['pycparser.lextab', 'pycparser.yacctab'],
     hookspath=[],
@@ -41,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['gdrivelink.ico'],
+    icon=['assets/gdrivelink.ico'],
 )

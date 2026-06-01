@@ -1,16 +1,16 @@
 # GDriveLink
 
-![GDriveLink](GDriveLink-biglogo.png)
+![GDriveLink](assets/GDriveLink-biglogo.png)
 
 GDriveLink is a small Python desktop app for quickly turning local files and clipboard images into Google Drive share links. Drop files into the app, or press `Ctrl+V` to preview and upload a copied image. Uploads go into a configurable Drive folder, are shared as `anyone with the link can read`, and the resulting link is copied to the clipboard.
 
 The app also keeps local upload history in `upload_history.json` and includes a Drive Folder tab with compact file cards for refreshing the selected Drive folder, viewing each file's current sharing status, and copying links from existing Drive files after ensuring link sharing is enabled.
 
-![Screenshot](screenshot.png)
+![Screenshot](assets/screenshot.png)
 
 ## Download
 
-[GDriveLink.exe](https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v1.0.8/GDriveLink.exe)
+[GDriveLink.exe](https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v1.1.0/GDriveLink.exe)
 
 ## Setup
 
@@ -74,7 +74,7 @@ dist\GDriveLink-v1.0.6\GDriveLink.exe
 dist/GDriveLink-v1.0.6/GDriveLink
 ```
 
-Keep `credentials.json` beside the executable for first-run Google OAuth setup. The build scripts copy `README.md` and `LICENSE` into the release directory when those files exist, then move runtime files from the newest previous release directory into the new one: `credentials.json`, `token.pickle`, `upload_history.json`, and `settings.json`. If there is no previous release copy, the scripts copy those runtime files from the project root when present. The build is a single-file executable, so there is no `_internal` folder to distribute. The generated `build\` folder is ignored by Git.
+The build scripts copy `README.md` and `LICENSE` into the release directory. The app requires a user-specific `credentials.json` file (obtained from Google Cloud Console during setup) placed beside the executable. Runtime files such as `token.pickle`, `upload_history.json`, and `settings.json` are user-specific and not distributed with releases. Users obtain or migrate these files as needed.
 
 ## System Tray Icon
 
@@ -85,7 +85,7 @@ Use Settings -> Startup -> Open with OS to launch GDriveLink automatically when 
 ## Notes
 
 - Verified with Python 3.14.5 in `.venv`.
-- The app window uses `gdrivelink.ico` as its program icon. `gdrivelink-icon.png` is a preview/source image for the icon.
+- The app window uses `assets/gdrivelink.ico` as its program icon.
 - Uploaded files are created in the Drive folder shown in the app. The default folder is `GDriveLink`.
 - If the configured Drive folder does not exist, the app creates it.
 - Successful uploads are saved to `upload_history.json` and loaded into the Upload History tab on startup.
@@ -94,3 +94,11 @@ Use Settings -> Startup -> Open with OS to launch GDriveLink automatically when 
 - Deleting a file from a Drive Folder card moves it to Google Drive trash and removes it from the current view.
 - The app requests the `drive.file` scope, so it can manage files it creates or files the user explicitly opens with the app.
 - Delete `token.pickle` to sign in with a different Google account.
+
+## License
+
+This project is source-available under the PolyForm Noncommercial License 1.0.0.
+
+You may use, study, modify, and share this software for non-commercial purposes.
+
+Commercial use, including use by companies, use in paid services, resale, SaaS integration, or use in revenue-generating products, requires separate written permission from the author.

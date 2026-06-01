@@ -6,16 +6,17 @@ import os
 import pickle
 import queue
 import re
-import shlex
+import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 import webbrowser
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse, urlencode
 from datetime import datetime
 from pathlib import Path
-from tkinter import BOTH, BOTTOM, END, LEFT, RIGHT, X, Y, BooleanVar, Button, Canvas, Checkbutton, Entry, Frame, Label, Listbox, Radiobutton, Scrollbar, StringVar, Toplevel, filedialog, messagebox
+from tkinter import BOTH, END, LEFT, RIGHT, X, Y, BooleanVar, Button, Canvas, Checkbutton, Entry, Frame, Label, Listbox, PhotoImage, Radiobutton, Scrollbar, StringVar, Toplevel, filedialog, messagebox
 from tkinter.ttk import Checkbutton as TtkCheckbutton, Notebook, Progressbar, Radiobutton as TtkRadiobutton, Scrollbar as TtkScrollbar, Style
 
 from google.auth.transport.requests import Request
@@ -30,8 +31,10 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 
 APP_TITLE = "GDriveLink"
+APP_VERSION = "1.1.0"
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+VERSION_FILE = APP_DIR / "VERSION"
 CLIENT_SECRET_FILE = APP_DIR / "credentials.json"
 TOKEN_FILE = APP_DIR / "token.pickle"
 HISTORY_FILE = APP_DIR / "upload_history.json"
@@ -39,18 +42,24 @@ SETTINGS_FILE = APP_DIR / "settings.json"
 STARTUP_APP_ID = "GDriveLink"
 SINGLE_INSTANCE_MUTEX_NAME = "Global\\GDriveLinkSingleInstance"
 SINGLE_INSTANCE_LOCK_FILE = "gdrivelink.lock"
-ICON_FILE = RESOURCE_DIR / "gdrivelink.ico"
-LOGO_FILE = RESOURCE_DIR / "GDriveLink-logo-128.png"
-ABOUT_ICON_FILE = RESOURCE_DIR / "about.png"
-CLIPBOARD_ICON_FILE = RESOURCE_DIR / "clipboard.png"
-CHOOSE_ICON_FILE = RESOURCE_DIR / "choose.png"
-OPEN_DRIVE_ICON_FILE = RESOURCE_DIR / "open_drive.png"
-REFRESH_DRIVE_ICON_FILE = RESOURCE_DIR / "refresh_drive.png"
+ICON_FILE = RESOURCE_DIR / "assets" / "gdrivelink.ico"
+ICON_PNG_FILE = RESOURCE_DIR / "assets" / "GDriveLink-icon-256.png"
+LOGO_FILE = RESOURCE_DIR / "assets" / "GDriveLink-logo-128.png"
+ABOUT_ICON_FILE = RESOURCE_DIR / "assets" / "about.png"
+CLIPBOARD_ICON_FILE = RESOURCE_DIR / "assets" / "clipboard.png"
+CHOOSE_ICON_FILE = RESOURCE_DIR / "assets" / "choose.png"
+OPEN_DRIVE_ICON_FILE = RESOURCE_DIR / "assets" / "open_drive.png"
+REFRESH_DRIVE_ICON_FILE = RESOURCE_DIR / "assets" / "refresh_drive.png"
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 THEME_OPTIONS = ("system", "light", "dark")
 DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS = True
 DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS = True
 DEFAULT_OPEN_WITH_OS = False
+DEFAULT_SCREENSHOT_MONITOR_ENABLED = False
+DEFAULT_SCREENSHOT_MONITOR_FOLDER = str(Path.home() / "Pictures" / "Screenshots")
+DEFAULT_OMIT_DRIVESDK_QUERY = False
+SCREENSHOT_MONITOR_POLL_INTERVAL = 2.0
+SCREENSHOT_MONITOR_STABLE_WAIT = 1.0
 LIGHT_THEME = {
     "window": "#f5f7fb",
     "surface": "#ffffff",
@@ -126,7 +135,22 @@ def default_settings() -> dict[str, bool | str]:
         "confirm_history_drive_deletions": DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS,
         "confirm_drive_folder_deletions": DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS,
         "open_with_os": DEFAULT_OPEN_WITH_OS,
+        "screenshot_monitor_enabled": DEFAULT_SCREENSHOT_MONITOR_ENABLED,
+        "screenshot_monitor_folder": DEFAULT_SCREENSHOT_MONITOR_FOLDER,
+        "omit_drivesdk_query": DEFAULT_OMIT_DRIVESDK_QUERY,
     }
+
+
+def load_app_version() -> str:
+    version = APP_VERSION
+    try:
+        if VERSION_FILE.exists():
+            file_text = VERSION_FILE.read_text(encoding="utf-8").strip()
+            if file_text:
+                version = file_text
+    except Exception:
+        pass
+    return version
 
 
 def load_settings() -> dict[str, bool | str]:
@@ -151,6 +175,15 @@ def load_settings() -> dict[str, bool | str]:
             data.get("confirm_drive_folder_deletions", DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS)
         ),
         "open_with_os": bool(data.get("open_with_os", DEFAULT_OPEN_WITH_OS)),
+        "screenshot_monitor_enabled": bool(
+            data.get("screenshot_monitor_enabled", DEFAULT_SCREENSHOT_MONITOR_ENABLED)
+        ),
+        "screenshot_monitor_folder": str(
+            data.get("screenshot_monitor_folder", DEFAULT_SCREENSHOT_MONITOR_FOLDER)
+        ),
+        "omit_drivesdk_query": bool(
+            data.get("omit_drivesdk_query", DEFAULT_OMIT_DRIVESDK_QUERY)
+        ),
     }
 
 
@@ -173,11 +206,7 @@ def startup_command() -> list[str]:
 
 
 def startup_command_string() -> str:
-    if sys.platform == "win32":
-        import subprocess
-
-        return subprocess.list2cmdline(startup_command())
-    return " ".join(shlex.quote(part) for part in startup_command())
+    return subprocess.list2cmdline(startup_command())
 
 
 def windows_startup_key_path() -> str:
@@ -281,32 +310,32 @@ def set_open_with_os_enabled(enabled: bool) -> None:
 
 
 def acquire_single_instance_lock():  # type: ignore[no-untyped-def]
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
+    if sys.platform != "win32":
+        import fcntl
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
-        kernel32.CreateMutexW.restype = wintypes.HANDLE
-        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        handle = kernel32.CreateMutexW(None, True, SINGLE_INSTANCE_MUTEX_NAME)
-        if not handle:
-            return None
-        if ctypes.get_last_error() == 183:
-            kernel32.CloseHandle(handle)
+        lock_dir = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
+        lock_file = lock_dir / SINGLE_INSTANCE_LOCK_FILE
+        handle = lock_file.open("w", encoding="utf-8")
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
             return None
         return handle
 
-    import fcntl
+    import ctypes
+    from ctypes import wintypes
 
-    lock_dir = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
-    lock_file = lock_dir / SINGLE_INSTANCE_LOCK_FILE
-    handle = lock_file.open("w", encoding="utf-8")
-    try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        handle.close()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateMutexW(None, True, SINGLE_INSTANCE_MUTEX_NAME)
+    if not handle:
+        return None
+    if ctypes.get_last_error() == 183:
+        kernel32.CloseHandle(handle)
         return None
     return handle
 
@@ -353,10 +382,22 @@ class DriveUploaderApp:
     def __init__(self) -> None:
         self.root = TkinterDnD.Tk()
         self.root.title(APP_TITLE)
-        if ICON_FILE.exists():
-            self.root.iconbitmap(ICON_FILE)
+        self.icon_photo = None
+        icon_set = False
+        if sys.platform.startswith("win") and ICON_FILE.exists():
+            try:
+                self.root.iconbitmap(ICON_FILE)
+                icon_set = True
+            except Exception:
+                icon_set = False
+        if not icon_set and ICON_PNG_FILE.exists():
+            try:
+                self.icon_photo = PhotoImage(file=str(ICON_PNG_FILE))
+                self.root.iconphoto(True, self.icon_photo)
+            except Exception:
+                pass
         self.root.geometry("690x650")
-        self.root.minsize(690, 650)
+        self.root.minsize(690, 750)
 
         self.status = StringVar(
             value=(
@@ -379,15 +420,25 @@ class DriveUploaderApp:
             value=bool(self.settings.get("confirm_drive_folder_deletions", DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS))
         )
         self.open_with_os = BooleanVar(value=is_open_with_os_enabled())
+        self.screenshot_monitor_enabled = BooleanVar(
+            value=bool(self.settings.get("screenshot_monitor_enabled", DEFAULT_SCREENSHOT_MONITOR_ENABLED))
+        )
+        self.screenshot_monitor_folder = StringVar(
+            value=str(self.settings.get("screenshot_monitor_folder", DEFAULT_SCREENSHOT_MONITOR_FOLDER))
+        )
+        self.omit_drivesdk_query = BooleanVar(
+            value=bool(self.settings.get("omit_drivesdk_query", DEFAULT_OMIT_DRIVESDK_QUERY))
+        )
         self.settings["open_with_os"] = self.open_with_os.get()
         self.theme = DARK_THEME if self._effective_theme_name() == "dark" else LIGHT_THEME
         self.style = Style(self.root)
-        self.result_queue: queue.Queue[tuple[str, str, dict[str, str] | str | None, int]] = queue.Queue()
-        self.drive_files_queue: queue.Queue[tuple[str, list[dict[str, str]] | str]] = queue.Queue()
+        self.result_queue: queue.Queue[tuple[str, str, object, int]] = queue.Queue()
+        self.drive_files_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.decision_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
         self.pending_uploads = 0
         self.preview_photo = None
         self.history = load_history()
+        self.version = load_app_version()
         self.history_cards: list[Frame] = []
         self.drive_files_by_id: dict[str, dict[str, str]] = {}
         self.drive_cards_by_id: dict[str, Frame] = {}
@@ -400,6 +451,12 @@ class DriveUploaderApp:
         self.open_drive_icon = self._load_image_exact(OPEN_DRIVE_ICON_FILE)
         self.refresh_drive_icon = self._load_image_exact(REFRESH_DRIVE_ICON_FILE)
         self.choose_button = None
+
+        # Screenshot monitor state
+        self._screenshot_known_files: set[tuple[str, int]] = set()
+        self._screenshot_watcher_thread: threading.Thread | None = None
+        self._screenshot_watcher_stop = threading.Event()
+        self._screenshot_last_status_update = ""
 
         self._configure_ttk_theme()
         self._build_ui()
@@ -417,6 +474,121 @@ class DriveUploaderApp:
         self._setup_tray()
         self.root.after(100, self._poll_results)
         self.root.after(100, self._poll_drive_files)
+        self.root.after(200, self._init_screenshot_monitor)
+
+    def _init_screenshot_monitor(self) -> None:
+        """Start or stop the screenshot monitor based on current settings."""
+        if self.screenshot_monitor_enabled.get():
+            self._start_screenshot_watcher()
+        else:
+            self._stop_screenshot_watcher()
+
+    def _start_screenshot_watcher(self) -> None:
+        """Start the background thread that watches the screenshot folder."""
+        if self._screenshot_watcher_thread and self._screenshot_watcher_thread.is_alive():
+            return
+
+        self._screenshot_watcher_stop.clear()
+        folder_path = Path(self.screenshot_monitor_folder.get().strip() or DEFAULT_SCREENSHOT_MONITOR_FOLDER)
+
+        if not folder_path.exists():
+            self.status.set(f"Screenshot monitor: folder not found ({folder_path})")
+            return
+
+        # Re-initialize known files from current folder contents
+        self._screenshot_known_files.clear()
+        self._scan_folder_for_known_files(folder_path)
+
+        self._screenshot_watcher_thread = threading.Thread(
+            target=self._screenshot_watcher_loop,
+            args=(folder_path,),
+            daemon=True,
+        )
+        self._screenshot_watcher_thread.start()
+        self.status.set(f"Screenshot monitor active: watching {folder_path}")
+
+    def _stop_screenshot_watcher(self) -> None:
+        """Stop the background screenshot watcher."""
+        self._screenshot_watcher_stop.set()
+        if self._screenshot_watcher_thread:
+            self._screenshot_watcher_thread = None
+        self.status.set("Screenshot monitor stopped")
+
+    def _scan_folder_for_known_files(self, folder_path: Path) -> None:
+        """Populate the known files set from the current folder contents."""
+        if not folder_path.exists():
+            return
+        try:
+            for entry in folder_path.iterdir():
+                if entry.is_file():
+                    try:
+                        size = entry.stat().st_size
+                        self._screenshot_known_files.add((entry.name, size))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+    def _screenshot_watcher_loop(self, folder_path: Path) -> None:
+        """Background loop that polls the screenshot folder for new files."""
+        while not self._screenshot_watcher_stop.is_set():
+            try:
+                if not folder_path.exists():
+                    self._run_on_ui_thread(
+                        lambda: (
+                            self.screenshot_monitor_enabled.set(False)
+                            if not self._screenshot_watcher_stop.is_set()
+                            else None,
+                            self.status.set("Screenshot monitor: folder no longer exists"),
+                        )
+                    )
+                    break
+
+                new_files: list[Path] = []
+                try:
+                    for entry in folder_path.iterdir():
+                        if entry.is_file():
+                            try:
+                                stat = entry.stat()
+                                key = (entry.name, stat.st_size)
+                                if key not in self._screenshot_known_files:
+                                    # Check if the file is stable (finished writing)
+                                    if self._is_file_stable(entry):
+                                        self._screenshot_known_files.add(key)
+                                        new_files.append(entry)
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
+
+                if new_files:
+                    # Upload new files on the UI thread
+                    self._run_on_ui_thread(
+                        lambda files=new_files: self._on_screenshots_detected(files)
+                    )
+
+            except Exception:
+                pass
+
+            self._screenshot_watcher_stop.wait(SCREENSHOT_MONITOR_POLL_INTERVAL)
+
+    def _is_file_stable(self, file_path: Path) -> bool:
+        """Check if a file has finished being written by comparing size twice."""
+        try:
+            size1 = file_path.stat().st_size
+            time.sleep(SCREENSHOT_MONITOR_STABLE_WAIT)
+            size2 = file_path.stat().st_size
+            return size1 == size2 and size1 > 0
+        except OSError:
+            return False
+
+    def _on_screenshots_detected(self, files: list[Path]) -> None:
+        """Called on UI thread when new screenshots are detected."""
+        if not files:
+            return
+        file_names = ", ".join(f.name for f in files)
+        self.status.set(f"Screenshot detected, uploading: {file_names}")
+        self._upload_files(files)
 
     def _build_ui(self) -> None:
         container = self._frame(self.root, padx=18, pady=18)
@@ -440,6 +612,11 @@ class DriveUploaderApp:
             "command": self._refresh_drive_files,
             "padx": 8,
             "pady": 8,
+            "relief": "flat",
+            "borderwidth": 0,
+            "bg": self.theme["window"],
+            "activebackground": self.theme["window"],
+            "highlightthickness": 0,
         }
         if self.refresh_drive_icon:
             refresh_button_options["image"] = self.refresh_drive_icon
@@ -449,12 +626,18 @@ class DriveUploaderApp:
             refresh_button_options["padx"] = 22
             refresh_button_options["pady"] = 10
         self.refresh_drive_button = Button(header, **refresh_button_options)
+        self.refresh_drive_button._gdrive_icon_button = True  # type: ignore[attr-defined]
         self.refresh_drive_button.pack(side=RIGHT)
 
         about_button_options = {
             "command": self._show_about,
             "padx": 8,
             "pady": 8,
+            "relief": "flat",
+            "borderwidth": 0,
+            "bg": self.theme["window"],
+            "activebackground": self.theme["window"],
+            "highlightthickness": 0,
         }
         if self.about_icon:
             about_button_options["image"] = self.about_icon
@@ -469,6 +652,7 @@ class DriveUploaderApp:
         about_button_frame.pack(side=RIGHT, padx=(0, 8))
         about_button_frame.pack_propagate(False)
         about_button = Button(about_button_frame, **about_button_options)
+        about_button._gdrive_icon_button = True  # type: ignore[attr-defined]
         about_button.pack(fill=BOTH, expand=True)
 
         self.tabs = Notebook(container)
@@ -494,8 +678,8 @@ class DriveUploaderApp:
             foreground="#263238",
         )
         self.drop_area.pack(fill="x")
-        self.drop_area.drop_target_register(DND_FILES)
-        self.drop_area.dnd_bind("<<Drop>>", self._handle_drop)
+        self.drop_area.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
+        self.drop_area.dnd_bind("<<Drop>>", self._handle_drop)  # type: ignore[attr-defined]
 
         folder_frame = self._frame(main_tab)
         folder_frame.pack(fill="x", pady=(12, 0))
@@ -528,7 +712,13 @@ class DriveUploaderApp:
             command=self._handle_clipboard_paste,
             padx=0,
             pady=10,
+            relief="flat",
+            borderwidth=0,
+            bg=self.theme["window"],
+            activebackground=self.theme["window"],
+            highlightthickness=0,
         )
+        clipboard_button._gdrive_icon_button = True  # type: ignore[attr-defined]
         if self.clipboard_icon:
             clipboard_button.configure(image=self.clipboard_icon, pady=0)
         else:
@@ -543,7 +733,13 @@ class DriveUploaderApp:
             command=self._choose_files,
             padx=0,
             pady=10,
+            relief="flat",
+            borderwidth=0,
+            bg=self.theme["window"],
+            activebackground=self.theme["window"],
+            highlightthickness=0,
         )
+        self.choose_button._gdrive_icon_button = True  # type: ignore[attr-defined]
         if self.choose_icon:
             self.choose_button.configure(image=self.choose_icon, pady=0)
         else:
@@ -562,7 +758,13 @@ class DriveUploaderApp:
             command=self._open_selected_drive_folder,
             padx=0,
             pady=10,
+            relief="flat",
+            borderwidth=0,
+            bg=self.theme["window"],
+            activebackground=self.theme["window"],
+            highlightthickness=0,
         )
+        open_drive_button._gdrive_icon_button = True  # type: ignore[attr-defined]
         if self.open_drive_icon:
             open_drive_button.configure(image=self.open_drive_icon, pady=0)
         else:
@@ -630,6 +832,17 @@ class DriveUploaderApp:
         )
         self.drive_cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
         self.drive_cards_scrollbar.pack(side=RIGHT, fill=Y)
+        footer = self._frame(container)
+        footer.pack(fill=X, pady=(6, 0))
+        self.version_label = self._label(
+            footer,
+            text=f"Version {self.version}",
+            anchor="e",
+            font=("Segoe UI", 8),
+            foreground=self.theme["muted"],
+            background=self.theme["window"],
+        )
+        self.version_label.pack(side=RIGHT)
         self._build_settings_tab(settings_tab)
 
     def _build_settings_tab(self, settings_tab: Frame) -> None:
@@ -668,6 +881,43 @@ class DriveUploaderApp:
             font=("Segoe UI", 10),
             anchor="w",
         ).pack(fill=X, pady=(8, 0))
+        self._checkbutton(
+            startup_frame,
+            text="Omit '?usp=drivesdk' from copied Drive links",
+            variable=self.omit_drivesdk_query,
+            command=self._handle_omit_drivesdk_query_changed,
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(fill=X, pady=(8, 0))
+
+        screenshot_frame = self._frame(settings_tab, padx=10, pady=12)
+        screenshot_frame.pack(fill=X)
+        self._label(screenshot_frame, text="Screenshot monitor", anchor="w", font=("Segoe UI", 12, "bold")).pack(fill=X)
+        self._checkbutton(
+            screenshot_frame,
+            text="Monitor screenshot folder for new files and auto-upload",
+            variable=self.screenshot_monitor_enabled,
+            command=self._handle_screenshot_monitor_changed,
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(fill=X, pady=(8, 0))
+        folder_path_frame = self._frame(screenshot_frame)
+        folder_path_frame.pack(fill=X, pady=(8, 0))
+        self._label(folder_path_frame, text="Folder", anchor="w", font=("Segoe UI", 10)).pack(side=LEFT)
+        self.screenshot_monitor_entry = Entry(
+            folder_path_frame,
+            textvariable=self.screenshot_monitor_folder,
+            font=("Segoe UI", 9),
+        )
+        self.screenshot_monitor_entry.pack(side=LEFT, fill=X, expand=True, padx=(8, 0))
+        self._button(
+            folder_path_frame,
+            text="Browse...",
+            command=self._browse_screenshot_folder,
+            font=("Segoe UI", 9),
+            padx=6,
+            pady=2,
+        ).pack(side=RIGHT, padx=(8, 0))
 
         deletion_frame = self._frame(settings_tab, padx=10, pady=12)
         deletion_frame.pack(fill=X)
@@ -689,7 +939,32 @@ class DriveUploaderApp:
             anchor="w",
         ).pack(fill=X, pady=(8, 0))
 
-    def _handle_canvas_mousewheel(self, event) -> None:  # type: ignore[no-untyped-def]
+    def _handle_omit_drivesdk_query_changed(self) -> None:
+        self.settings["omit_drivesdk_query"] = self.omit_drivesdk_query.get()
+        save_settings(self.settings)
+
+    def _handle_screenshot_monitor_changed(self) -> None:
+        enabled = self.screenshot_monitor_enabled.get()
+        folder = self.screenshot_monitor_folder.get().strip() or DEFAULT_SCREENSHOT_MONITOR_FOLDER
+        self.settings["screenshot_monitor_enabled"] = enabled
+        self.settings["screenshot_monitor_folder"] = folder
+        save_settings(self.settings)
+        if enabled:
+            self.screenshot_monitor_folder.set(folder)
+            self._start_screenshot_watcher()
+        else:
+            self._stop_screenshot_watcher()
+
+    def _browse_screenshot_folder(self) -> None:
+        folder = filedialog.askdirectory(
+            title="Select screenshot folder",
+            initialdir=self.screenshot_monitor_folder.get() or str(Path.home() / "Pictures"),
+        )
+        if folder:
+            self.screenshot_monitor_folder.set(folder)
+            self._handle_screenshot_monitor_changed()
+
+    def _handle_canvas_mousewheel(self, event) -> str | None:  # type: ignore[no-untyped-def]
         canvas = self._selected_scroll_canvas()
         if canvas is None or not self._pointer_is_inside_widget(canvas):
             return
@@ -891,7 +1166,7 @@ class DriveUploaderApp:
             arrowcolor=[("active", colors["text"]), ("pressed", colors["text"])],
         )
 
-    def _apply_theme(self, root_widget=None) -> None:  # type: ignore[no-untyped-def]
+    def _apply_theme(self, root_widget=None) -> None:
         colors = self.theme
         widget = root_widget or self.root
         self._style_widget_tree(widget)
@@ -902,7 +1177,7 @@ class DriveUploaderApp:
         self.root.option_add("*selectBackground", colors["select"])
         self.root.option_add("*selectForeground", colors["select_text"])
 
-    def _style_widget_tree(self, widget) -> None:  # type: ignore[no-untyped-def]
+    def _style_widget_tree(self, widget) -> None:
         colors = self.theme
         widget_class = widget.winfo_class()
         try:
@@ -912,17 +1187,23 @@ class DriveUploaderApp:
                 widget.configure(background=colors["window"])
             elif isinstance(widget, Label):
                 background = colors["drop"] if widget is getattr(self, "drop_area", None) else colors["window"]
-                widget.configure(background=background, foreground=colors["text"])
+                foreground = colors["muted"] if widget is getattr(self, "version_label", None) else colors["text"]
+                widget.configure(background=background, foreground=foreground)
             elif isinstance(widget, Button):
-                widget.configure(
-                    background=colors["button"],
-                    foreground=colors["text"],
-                    activebackground=colors["button_active"],
-                    activeforeground=colors["text"],
-                    highlightbackground=colors["window"],
-                    highlightcolor=colors["accent"],
-                    relief="raised",
-                )
+                if getattr(widget, "_gdrive_icon_button", False):
+                    widget.configure(
+                        background=colors["window"],
+                        activebackground=colors["window"],
+                    )
+                else:
+                    widget.configure(
+                        background=colors["button"],
+                        foreground=colors["text"],
+                        activebackground=colors["button_active"],
+                        activeforeground=colors["text"],
+                        highlightbackground=colors["window"],
+                        highlightcolor=colors["accent"],
+                    )
             elif isinstance(widget, Entry):
                 widget.configure(
                     background=colors["entry"],
@@ -977,16 +1258,16 @@ class DriveUploaderApp:
         for child in widget.winfo_children():
             self._style_widget_tree(child)
 
-    def _run_on_ui_thread(self, callback) -> None:  # type: ignore[no-untyped-def]
+    def _run_on_ui_thread(self, callback) -> None:
         try:
             self.root.after(0, callback)
         except RuntimeError:
             pass
 
-    def _show_window_from_tray(self, icon=None, item=None) -> None:  # type: ignore[no-untyped-def]
+    def _show_window_from_tray(self, icon=None, item=None) -> None:
         self._run_on_ui_thread(self._show_window)
 
-    def _paste_link_from_tray(self, icon=None, item=None) -> None:  # type: ignore[no-untyped-def]
+    def _paste_link_from_tray(self, icon=None, item=None) -> None:
         self._run_on_ui_thread(self._paste_link)
 
     def _paste_link(self) -> None:
@@ -998,6 +1279,7 @@ class DriveUploaderApp:
         if not link or not link.strip().lower().startswith(("http://", "https://")):
             messagebox.showinfo(APP_TITLE, "Clipboard does not contain a valid link.")
             return
+
         link = link.strip()
         try:
             parsed = urlparse(link)
@@ -1015,7 +1297,7 @@ class DriveUploaderApp:
         self.root.lift()
         self.root.focus_force()
 
-    def _toggle_window(self, icon=None, item=None) -> None:  # type: ignore[no-untyped-def]
+    def _toggle_window(self, icon=None, item=None) -> None:
         self._run_on_ui_thread(self._toggle_window_on_ui)
 
     def _toggle_window_on_ui(self) -> None:
@@ -1024,7 +1306,7 @@ class DriveUploaderApp:
         else:
             self._hide_to_tray()
 
-    def _handle_window_unmap(self, _event=None) -> None:  # type: ignore[no-untyped-def]
+    def _handle_window_unmap(self, _event=None) -> None:
         if self.root.state() == "iconic":
             self.root.after_idle(self._hide_to_tray)
 
@@ -1037,6 +1319,7 @@ class DriveUploaderApp:
         self._run_on_ui_thread(self._on_close)
 
     def _on_close(self) -> None:
+        self._stop_screenshot_watcher()
         if self.tray_icon:
             self.tray_icon.stop()
         self.root.quit()
@@ -1136,7 +1419,7 @@ class DriveUploaderApp:
     def _open_history_link(self, item: dict[str, str]) -> None:
         link = item.get("webViewLink")
         if link:
-            webbrowser.open(link)
+            webbrowser.open(self._normalize_drive_link(link))
 
     def _copy_history_link(self, item: dict[str, str]) -> None:
         link = item.get("webViewLink", "")
@@ -1227,11 +1510,11 @@ class DriveUploaderApp:
         if filenames:
             self._upload_files([Path(filename) for filename in filenames])
 
-    def _handle_drop(self, event) -> None:  # type: ignore[no-untyped-def]
+    def _handle_drop(self, event) -> None:
         files = [Path(file) for file in self.root.tk.splitlist(event.data)]
         self._upload_files(files)
 
-    def _handle_clipboard_paste(self, _event=None) -> str:  # type: ignore[no-untyped-def]
+    def _handle_clipboard_paste(self, _event=None) -> str | None:
         try:
             image = ImageGrab.grabclipboard()
         except Exception as exc:  # noqa: BLE001 - show clipboard errors in the UI.
@@ -1250,7 +1533,7 @@ class DriveUploaderApp:
         self._show_clipboard_preview(image)
         return "break"
 
-    def _show_clipboard_preview(self, image) -> None:  # type: ignore[no-untyped-def]
+    def _show_clipboard_preview(self, image) -> None:
         preview_window = Toplevel(self.root)
         preview_window.title("Clipboard image preview")
         preview_window.transient(self.root)
@@ -1292,14 +1575,14 @@ class DriveUploaderApp:
         filename_entry.icursor(END)
         self._apply_theme(preview_window)
 
-    def _confirm_clipboard_upload(self, preview_window: Toplevel, image, filename: str) -> None:  # type: ignore[no-untyped-def]
+    def _confirm_clipboard_upload(self, preview_window: Toplevel, image, filename: str) -> None:
         preview_window.destroy()
         clean_filename = self._clean_clipboard_filename(filename)
         temp_path = Path(tempfile.gettempdir()) / clean_filename
         image.save(temp_path, "PNG")
         self._upload_files([temp_path], cleanup_after_upload=True)
 
-    def _show_clipboard_files_preview(self, paths: list[Path]) -> None:  # type: ignore[no-untyped-def]
+    def _show_clipboard_files_preview(self, paths: list[Path]) -> None:
         preview_window = Toplevel(self.root)
         preview_window.title("Clipboard files preview")
         preview_window.transient(self.root)
@@ -1339,7 +1622,7 @@ class DriveUploaderApp:
         ok_button.focus_set()
         self._apply_theme(preview_window)
 
-    def _confirm_clipboard_files_upload(self, preview_window: Toplevel, paths: list[Path]) -> None:  # type: ignore[no-untyped-def]
+    def _confirm_clipboard_files_upload(self, preview_window: Toplevel, paths: list[Path]) -> None:
         preview_window.destroy()
         self._upload_files(paths)
 
@@ -1496,7 +1779,7 @@ class DriveUploaderApp:
             img = Image.open(image_file)
             ratio = height / img.height
             target_w = int(img.width * ratio)
-            img = img.resize((target_w, height), Image.LANCZOS)
+            img = img.resize((target_w, height), Image.Resampling.LANCZOS)
             return ImageTk.PhotoImage(img)
         except Exception:
             return None
@@ -1519,14 +1802,7 @@ class DriveUploaderApp:
             Label(about, image=self.dialog_logo).pack(pady=(16, 4))
         else:
             Label(about, text=APP_TITLE, font=("Segoe UI", 18, "bold")).pack(pady=(16, 4))
-        version = "1.0.3"
-        try:
-            vfile = APP_DIR / "VERSION"
-            if vfile.exists():
-                version = vfile.read_text(encoding="utf-8").strip() or version
-        except Exception:
-            pass
-        Label(about, text=f"Version {version}", font=("Segoe UI", 10)).pack()
+        Label(about, text=f"Version {self.version}", font=("Segoe UI", 10)).pack()
 
         Label(
             about,
@@ -1581,7 +1857,7 @@ class DriveUploaderApp:
                 self._add_history_card(detail, at_top=True)
                 link = detail.get("webViewLink", "")
                 self._copy_to_clipboard(link)
-            elif kind == "conflict":
+            elif kind == "conflict" and isinstance(detail, tuple) and len(detail) == 4:
                 file_path, folder_id, existing_id, suggested_name = detail
                 action, chosen_name = self._show_duplicate_dialog(name, suggested_name)
                 if action == "cancel":
@@ -1703,7 +1979,7 @@ class DriveUploaderApp:
         if item:
             link = item.get("webViewLink")
             if link:
-                webbrowser.open(link)
+                webbrowser.open(self._normalize_drive_link(link))
 
     def _clear_drive_cards(self) -> None:
         self.drive_files_by_id.clear()
@@ -1811,7 +2087,24 @@ class DriveUploaderApp:
         if not self.drive_files_by_id:
             self._show_drive_message("No files found in this Drive folder.")
 
+    def _normalize_drive_link(self, link: str) -> str:
+        if not self.settings.get("omit_drivesdk_query", False):
+            return link
+        try:
+            parsed = urlparse(link)
+            if not parsed.query:
+                return link
+            query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+            filtered = [(k, v) for k, v in query_pairs if not (k == "usp" and v == "drivesdk")]
+            if len(filtered) == len(query_pairs):
+                return link
+            new_query = urlencode(filtered, doseq=True)
+            return parsed._replace(query=new_query).geturl()
+        except Exception:
+            return link
+
     def _copy_to_clipboard(self, link: str) -> None:
+        link = self._normalize_drive_link(link)
         self.root.clipboard_clear()
         self.root.clipboard_append(link)
         self.root.update_idletasks()
@@ -1831,7 +2124,7 @@ class DriveUploaderApp:
             )
             return
         if hasattr(os, "startfile"):
-            os.startfile(folder_path)  # type: ignore[attr-defined]
+            os.startfile(folder_path)
         else:
             webbrowser.open(folder_path.as_uri())
         self.status.set(f"Opened Drive folder in Explorer: {folder_path}")
@@ -1872,7 +2165,7 @@ def get_drive_service():
                 f"Console and save it beside this script as {CLIENT_SECRET_FILE.name}."
             )
         flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_FILE, SCOPES)
-        credentials = flow.run_local_server(port=0)
+        credentials = flow.run_local_server(port=0)  # type: ignore[assignment]
 
     with TOKEN_FILE.open("wb") as token:
         pickle.dump(credentials, token)
@@ -2086,11 +2379,7 @@ def get_unique_filename(service, folder_id: str, filename: str) -> str:  # type:
 
 def overwrite_file_content(service, file_path: Path, file_id: str) -> dict[str, str]:  # type: ignore[no-untyped-def]
     media = MediaFileUpload(str(file_path), resumable=True)
-    updated = (
-        service.files()
-        .update(fileId=file_id, media_body=media, fields="id, webViewLink")
-        .execute()
-    )
+    service.files().update(fileId=file_id, media_body=media, fields="id, webViewLink").execute()
     try:
         service.permissions().create(
             fileId=file_id,
