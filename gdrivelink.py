@@ -31,7 +31,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 
 APP_TITLE = "GDriveLink"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 VERSION_FILE = APP_DIR / "VERSION"
