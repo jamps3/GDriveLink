@@ -10,7 +10,10 @@ The app also keeps local upload history in `upload_history.json` and includes a 
 
 ## Download
 
-[GDriveLink.exe](https://github.com/jamps3/GDriveLink/blob/main/dist/GDriveLink-v1.1.1/GDriveLink.exe)
+- [Windows release ZIP](release/v1.1.1/GDriveLink-v1.1.1-windows-x64.zip)
+- [Linux release tarball](release/v1.1.1/GDriveLink-v1.1.1-linux-x64.tar.gz)
+- [Windows SHA256 checksums](release/v1.1.1/sha256sums-windows.txt)
+- [Linux SHA256 checksums](release/v1.1.1/sha256sums-linux.txt)
 
 ## Setup
 
