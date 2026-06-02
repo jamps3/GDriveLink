@@ -55,6 +55,7 @@ THEME_OPTIONS = ("system", "light", "dark")
 DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS = True
 DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS = True
 DEFAULT_OPEN_WITH_OS = False
+DEFAULT_START_MINIMIZED = False
 DEFAULT_SCREENSHOT_MONITOR_ENABLED = False
 DEFAULT_SCREENSHOT_MONITOR_FOLDER = str(Path.home() / "Pictures" / "Screenshots")
 DEFAULT_OMIT_DRIVESDK_QUERY = False
@@ -135,6 +136,7 @@ def default_settings() -> dict[str, bool | str]:
         "confirm_history_drive_deletions": DEFAULT_CONFIRM_HISTORY_DRIVE_DELETIONS,
         "confirm_drive_folder_deletions": DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS,
         "open_with_os": DEFAULT_OPEN_WITH_OS,
+        "start_minimized": DEFAULT_START_MINIMIZED,
         "screenshot_monitor_enabled": DEFAULT_SCREENSHOT_MONITOR_ENABLED,
         "screenshot_monitor_folder": DEFAULT_SCREENSHOT_MONITOR_FOLDER,
         "omit_drivesdk_query": DEFAULT_OMIT_DRIVESDK_QUERY,
@@ -175,6 +177,7 @@ def load_settings() -> dict[str, bool | str]:
             data.get("confirm_drive_folder_deletions", DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS)
         ),
         "open_with_os": bool(data.get("open_with_os", DEFAULT_OPEN_WITH_OS)),
+        "start_minimized": bool(data.get("start_minimized", DEFAULT_START_MINIMIZED)),
         "screenshot_monitor_enabled": bool(
             data.get("screenshot_monitor_enabled", DEFAULT_SCREENSHOT_MONITOR_ENABLED)
         ),
@@ -420,6 +423,9 @@ class DriveUploaderApp:
             value=bool(self.settings.get("confirm_drive_folder_deletions", DEFAULT_CONFIRM_DRIVE_FOLDER_DELETIONS))
         )
         self.open_with_os = BooleanVar(value=is_open_with_os_enabled())
+        self.start_minimized = BooleanVar(
+            value=bool(self.settings.get("start_minimized", DEFAULT_START_MINIMIZED))
+        )
         self.screenshot_monitor_enabled = BooleanVar(
             value=bool(self.settings.get("screenshot_monitor_enabled", DEFAULT_SCREENSHOT_MONITOR_ENABLED))
         )
@@ -883,6 +889,14 @@ class DriveUploaderApp:
         ).pack(fill=X, pady=(8, 0))
         self._checkbutton(
             startup_frame,
+            text="Start minimized (to tray)",
+            variable=self.start_minimized,
+            command=self._handle_start_minimized_changed,
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(fill=X, pady=(8, 0))
+        self._checkbutton(
+            startup_frame,
             text="Omit '?usp=drivesdk' from copied Drive links",
             variable=self.omit_drivesdk_query,
             command=self._handle_omit_drivesdk_query_changed,
@@ -938,6 +952,10 @@ class DriveUploaderApp:
             font=("Segoe UI", 10),
             anchor="w",
         ).pack(fill=X, pady=(8, 0))
+
+    def _handle_start_minimized_changed(self) -> None:
+        self.settings["start_minimized"] = self.start_minimized.get()
+        save_settings(self.settings)
 
     def _handle_omit_drivesdk_query_changed(self) -> None:
         self.settings["omit_drivesdk_query"] = self.omit_drivesdk_query.get()
@@ -1814,7 +1832,7 @@ class DriveUploaderApp:
         ).pack(fill=X, padx=20, pady=12)
 
         Label(about, text="© 2026 Jan-Erik Labbas. All rights reserved.", font=("Segoe UI", 9)).pack(pady=(0, 4))
-        Label(about, text="MIT License", font=("Segoe UI", 9)).pack(pady=(0, 8))
+        Label(about, text="PolyForm Noncommercial License 1.0.0", font=("Segoe UI", 9)).pack(pady=(0, 8))
 
         support = Frame(about)
         support.pack()
@@ -2131,6 +2149,8 @@ class DriveUploaderApp:
 
     def run(self) -> None:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        if self.start_minimized.get():
+            self.root.withdraw()
         self.root.mainloop()
 
 
