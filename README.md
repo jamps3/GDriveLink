@@ -79,14 +79,21 @@ chmod +x ./build-linux.sh
 ./build-linux.sh
 ```
 
-Each build increments `VERSION` and creates a versioned release directory with a stable executable name:
+Each build reads the version number from the `VERSION` file and prompts the user for confirmation.
+Build creates a versioned dist directory:
 
 ```text
-dist\GDriveLink-v1.0.6\GDriveLink.exe
-dist/GDriveLink-v1.0.6/GDriveLink
+dist\GDriveLink-v1.1.1-windows-x64\
+dist/GDriveLink-v1.1.1-linux-x64/
 ```
 
-The build scripts copy `README.md` and `LICENSE` into the release directory. The app requires a user-specific `credentials.json` file (obtained from Google Cloud Console during setup) placed beside the executable. Runtime files such as `token.pickle`, `upload_history.json`, and `settings.json` are user-specific and not distributed with releases. Users obtain or migrate these files as needed.
+And makes the release packages:
+```text
+release\GDriveLink-v1.1.1-windows-x64.zip
+release/GDriveLink-v1.1.1-linux-x64.tar.gz
+```
+
+The app requires a user-specific `credentials.json` file (obtained from Google Cloud Console during setup) placed beside the executable. Runtime files such as `token.pickle`, `upload_history.json`, and `settings.json` are user-specific and not distributed with releases. Users obtain or migrate these files as needed.
 
 ## System Tray Icon
 
