@@ -22,14 +22,23 @@ The app also keeps local upload history in `upload_history.json` and includes a 
 3. Configure the OAuth consent screen.
 4. Create an OAuth client ID for a **Desktop app**.
 5. Download the client JSON and save it in this folder as `credentials.json`.
-6. Create and activate a virtual environment:
 
+# Source
+1. Create and activate a virtual environment:
+
+Windows:
 ```powershell
 py -3.14 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-7. Install dependencies:
+Linux:
+```bash
+py -3.14 -m venv .venv
+./.venv/bin/activate
+```
+
+2. Install dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
